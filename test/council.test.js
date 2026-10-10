@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runCouncil, parseStance, parseVerdict, systemPrompt } from '../src/council.js';
+import { runCouncil, parseStance, parseVerdict, systemPrompt, openingMessage, transcriptMarkdown } from '../src/council.js';
 import { renderMarkdown } from '../src/markdown.js';
 
 const members = [
@@ -104,4 +104,58 @@ test('markdown renderer escapes HTML', () => {
   assert.match(html, /<strong>bold<\/strong>/);
   assert.match(html, /<code>x&lt;y<\/code>/);
   assert.match(html, /<ul><li>one<\/li><li>two<\/li><\/ul>/);
+});
+
+const textDoc = { name: 'quote.pdf', kind: 'text', text: '[Page 1]\nFurnace replacement: $6,400' };
+const photo = { name: 'label.jpg', kind: 'image', dataUrl: 'data:image/jpeg;base64,AAAA' };
+const scan = { name: 'scan.pdf', kind: 'image', page: 2, dataUrl: 'data:image/jpeg;base64,BBBB' };
+
+test('no attachments leaves the question as a plain string', () => {
+  assert.equal(openingMessage('Q?', []), 'Q?');
+});
+
+test('text evidence is inlined and tagged with its file name', () => {
+  const msg = openingMessage('Q?', [textDoc]);
+  assert.equal(typeof msg, 'string');
+  assert.match(msg, /<evidence name="quote\.pdf">\n\[Page 1\]\nFurnace replacement: \$6,400\n<\/evidence>/);
+  assert.match(msg, /one file/);
+});
+
+test('images become image parts for vision models', () => {
+  const msg = openingMessage('Q?', [textDoc, photo, scan], true);
+  assert.ok(Array.isArray(msg));
+  assert.match(msg[0].text, /3 files/);
+  assert.match(msg[0].text, /Furnace replacement/);
+  const imgs = msg.filter((p) => p.type === 'image_url').map((p) => p.image_url.url);
+  assert.deepEqual(imgs, [photo.dataUrl, scan.dataUrl]);
+  assert.ok(msg.some((p) => p.text === 'Image evidence: scan.pdf, page 2'));
+});
+
+test('non-vision models get text plus a note about the images they cannot see', () => {
+  const msg = openingMessage('Q?', [textDoc, photo, scan], false);
+  assert.equal(typeof msg, 'string');
+  assert.match(msg, /Furnace replacement/);
+  assert.match(msg, /2 images — label\.jpg, scan\.pdf, page 2 — could not be shown/);
+  assert.doesNotMatch(msg, /base64/);
+});
+
+test('every member gets the evidence in its opening message; the chair gets only file names', async () => {
+  const { complete, calls } = fakeComplete();
+  const mixed = [{ ...members[0], vision: true }, { ...members[1], vision: false }, members[2]];
+  await runCouncil({ question: 'Q?', members: mixed, attachments: [textDoc, photo], rounds: 1, judgeModel: 'j', complete });
+  const opening = (model) => calls.find((c) => c.model === model).messages[1].content;
+  assert.ok(Array.isArray(opening('a/claude')));
+  assert.equal(typeof opening('b/gpt'), 'string');
+  assert.ok(Array.isArray(opening('c/gemini')), 'unknown vision defaults to sending images');
+  // Round 2 history still carries the evidence.
+  const r2 = calls.find((c) => c.model === 'b/gpt' && c.messages.length === 4);
+  assert.match(r2.messages[1].content, /Furnace replacement/);
+  const judge = calls.at(-1).messages[1].content;
+  assert.match(judge, /Evidence attached: quote\.pdf, label\.jpg/);
+  assert.doesNotMatch(judge, /Furnace replacement/);
+});
+
+test('transcript lists each attached file once', () => {
+  const md = transcriptMarkdown('Q?', [], null, [scan, { ...scan, page: 3 }, textDoc]);
+  assert.match(md, /_Evidence attached: scan\.pdf, quote\.pdf_/);
 });

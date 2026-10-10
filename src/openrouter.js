@@ -12,6 +12,7 @@ export async function listModels() {
       id: m.id,
       name: m.name,
       created: m.created,
+      vision: (m.architecture?.input_modalities ?? []).includes('image'),
       prompt: Number(m.pricing?.prompt ?? 0) * 1e6,
       completion: Number(m.pricing?.completion ?? 0) * 1e6,
     }))

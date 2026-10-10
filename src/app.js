@@ -1,6 +1,7 @@
 import { PERSONAS, runCouncil, transcriptMarkdown } from './council.js';
 import { listModels, makeComplete } from './openrouter.js';
 import { renderMarkdown } from './markdown.js';
+import { ACCEPT, readAttachment } from './attachments.js';
 
 const $ = (id) => document.getElementById(id);
 const STORE = 'my-council:v1';
@@ -40,6 +41,8 @@ const PRESETS = {
 let models = [];
 let controller = null;
 let lastRun = null;
+let evidence = []; // [{id, name, status:'reading'|'ready'|'error', note, items, chars, images}]
+let nextEvidenceId = 1;
 
 // ---------- persistence ----------
 
@@ -101,6 +104,7 @@ function readSeats() {
     return {
       name: nameFor(model),
       model,
+      vision: models.find((x) => x.id === model)?.vision,
       persona: seat.querySelector('.persona').value,
       customPersona: seat.querySelector('.customPersona').value,
     };
@@ -129,16 +133,69 @@ function updateEstimate() {
   const price = (id) => models.find((m) => m.id === id);
   let est = 0;
   let known = true;
+  const ready = evidence.filter((e) => e.status === 'ready');
+  const textTokens = ready.reduce((s, e) => s + e.chars, 0) / 4;
+  const imageCount = ready.reduce((s, e) => s + e.images, 0);
   for (const m of members) {
     const p = price(m.model);
     if (!p) { known = false; continue; }
-    for (let r = 0; r <= rounds; r++) est += ((300 + r * 1600) * p.prompt + 500 * p.completion) / 1e6;
+    // Evidence sits in the opening message, so it is re-sent with every round.
+    const evidenceTokens = textTokens + (p.vision ? imageCount * 1500 : 0);
+    for (let r = 0; r <= rounds; r++) est += ((300 + evidenceTokens + r * 1600) * p.prompt + 500 * p.completion) / 1e6;
   }
   const j = price($('judgeModel').value.trim());
   if (j) est += (members.length * (1 + rounds) * 500 * j.prompt + 600 * j.completion) / 1e6;
   else known = false;
   if (models.length && est > 0) text += ` Rough cost: ~$${est.toFixed(est < 0.1 ? 3 : 2)}${known ? '' : ' (some models unpriced)'}.`;
+  if (ready.length) text += ` Includes ${textTokens < 1000 ? '<1k' : `~${Math.round(textTokens / 1000)}k`} tokens of evidence${imageCount ? ` and ${imageCount} image${imageCount > 1 ? 's' : ''}` : ''}, re-sent each round.`;
   $('estimate').textContent = text;
+  updateAttachWarn();
+}
+
+// ---------- evidence ----------
+
+function renderEvidence() {
+  const list = $('attachList');
+  list.innerHTML = '';
+  for (const e of evidence) {
+    const li = document.createElement('li');
+    li.className = e.status;
+    li.innerHTML = '<span class="name"></span><span class="note"></span><button type="button" aria-label="Remove">✕</button>';
+    li.querySelector('.name').textContent = e.name;
+    li.querySelector('.note').textContent =
+      e.status === 'reading' ? 'reading…' : e.status === 'error' ? e.note : `${e.note}${e.chars ? ` · ${e.chars < 4000 ? '<1k' : `~${Math.round(e.chars / 4000)}k`} tokens` : ''}`;
+    li.querySelector('button').addEventListener('click', () => {
+      evidence = evidence.filter((x) => x !== e);
+      renderEvidence();
+    });
+    list.append(li);
+  }
+  updateEstimate();
+}
+
+function updateAttachWarn() {
+  const images = evidence.some((e) => e.status === 'ready' && e.images);
+  const blind = images ? readSeats().filter((m) => m.vision === false) : [];
+  $('attachWarn').textContent = blind.length
+    ? `Can't see images: ${blind.map((m) => m.model).join(', ')}. ${blind.length === 1 ? 'That member' : 'Those members'} will be told images exist but won't see them — pick an image-capable model to fix.`
+    : '';
+}
+
+async function addFiles(files) {
+  const added = [...files].map((file) => ({ id: nextEvidenceId++, name: file.name, status: 'reading', file }));
+  evidence.push(...added);
+  renderEvidence();
+  await Promise.all(
+    added.map(async (e) => {
+      try {
+        Object.assign(e, await readAttachment(e.file), { status: 'ready' });
+      } catch (err) {
+        Object.assign(e, { status: 'error', note: String(err?.message ?? err).replace(`${e.name}: `, '') });
+      }
+      delete e.file;
+      renderEvidence();
+    }),
+  );
 }
 
 // ---------- rendering ----------
@@ -186,7 +243,9 @@ function showVerdict(verdict) {
 function setRunning(running) {
   $('go').disabled = running;
   $('stop').hidden = !running;
-  for (const el of document.querySelectorAll('#seats input, #seats select, #seats textarea, .presets button')) el.disabled = running;
+  for (const el of document.querySelectorAll('#seats input, #seats select, #seats textarea, .presets button, #attachList button')) el.disabled = running;
+  $('files').disabled = running;
+  document.querySelector('label[for="files"]').classList.toggle('disabled', running);
 }
 
 // ---------- run ----------
@@ -203,6 +262,8 @@ async function convene() {
   }
   if (!question) return void $('question').focus();
   if (members.some((m) => !m.model)) return void ($('status').textContent = 'Every member needs a model.');
+  if (evidence.some((e) => e.status === 'reading')) return void ($('status').textContent = 'Still reading your attachments — try again in a moment.');
+  const attachments = evidence.filter((e) => e.status === 'ready').flatMap((e) => e.items);
   const judgeModel = $('judgeModel').value.trim() || members[0].model;
   save();
 
@@ -271,6 +332,7 @@ async function convene() {
     const result = await runCouncil({
       question,
       members,
+      attachments,
       rounds: Number($('rounds').value) || 0,
       earlyStop: $('earlyStop').checked,
       judgeModel,
@@ -278,7 +340,7 @@ async function convene() {
       onEvent,
       signal: controller.signal,
     });
-    lastRun = { question, ...result };
+    lastRun = { question, attachments, ...result };
     $('status').textContent = 'Done.';
     $('export').hidden = false;
     $('verdict').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -293,7 +355,7 @@ async function convene() {
 
 function exportTranscript() {
   if (!lastRun) return;
-  const md = transcriptMarkdown(lastRun.question, lastRun.transcript, lastRun.verdict);
+  const md = transcriptMarkdown(lastRun.question, lastRun.transcript, lastRun.verdict, lastRun.attachments);
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([md], { type: 'text/markdown' }));
   a.download = `council-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.md`;
@@ -325,6 +387,26 @@ for (const id of ['apiKey', 'rounds', 'earlyStop', 'judgeModel']) {
     save();
   });
 }
+$('files').accept = ACCEPT;
+$('files').addEventListener('change', () => {
+  addFiles($('files').files);
+  $('files').value = '';
+});
+const askPanel = $('askPanel');
+askPanel.addEventListener('dragover', (e) => {
+  if (!e.dataTransfer?.types.includes('Files') || $('go').disabled) return;
+  e.preventDefault();
+  askPanel.classList.add('dragging');
+});
+askPanel.addEventListener('dragleave', (e) => {
+  if (!askPanel.contains(e.relatedTarget)) askPanel.classList.remove('dragging');
+});
+askPanel.addEventListener('drop', (e) => {
+  askPanel.classList.remove('dragging');
+  if (!e.dataTransfer?.files.length || $('go').disabled) return;
+  e.preventDefault();
+  addFiles(e.dataTransfer.files);
+});
 $('go').addEventListener('click', convene);
 $('stop').addEventListener('click', () => controller?.abort());
 $('export').addEventListener('click', exportTranscript);

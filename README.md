@@ -13,6 +13,23 @@ Everything runs in your browser through [OpenRouter](https://openrouter.ai), so 
 
 With 3 debate rounds that comes to up to 13 model calls per question. The settings panel shows a rough cost estimate, and the app shows the actual spend reported by OpenRouter.
 
+## Attaching evidence
+
+You can attach files that every member should consider: quotes, reports, photos, spreadsheets exported as CSV, and so on. Use **Attach evidence** or drag files onto the question box. Attachments are optional.
+
+| File | What the members get |
+|---|---|
+| PDF with text | The text, marked `[Page N]` so members can cite pages |
+| Scanned PDF (no text layer) | The first 10 pages as images |
+| Word (.docx) | The text |
+| Images | The image, scaled to at most 1600 px |
+| .txt .md .csv .json .html .xml .yaml .log .eml | The text as-is |
+
+- Files are read in your browser. The PDF and Word readers (pdf.js and mammoth) load from cdnjs only when you attach one of those files. Nothing goes anywhere except into the prompts sent to OpenRouter.
+- The evidence goes into each member's opening message, and members are told to cite it by file name and page. The chair sees only the file names and judges the debate, not the documents.
+- **Images and models that can't see them:** a member whose model doesn't accept images is told the images exist but doesn't see them. The app warns you about this before you start.
+- **Cost:** the evidence is part of the conversation, so it is re-sent every round. A 30-page PDF is roughly 15–20k tokens × 3 members × 4 rounds. The estimate in Settings includes it. Each file is cut off at about 120k characters.
+
 ## Members: model × persona
 
 Each of the three seats has two separate settings:
@@ -54,4 +71,5 @@ Paste an OpenRouter key into Settings. It is saved in this browser's localStorag
 - `src/openrouter.js`: streaming chat completions and the model list.
 - `src/app.js`, `index.html`, `src/styles.css`: the UI.
 - `src/markdown.js`: a small Markdown renderer that escapes all HTML first.
+- `src/attachments.js`: reads attached files into evidence (PDF, Word, images, text).
 - `test/`: `node --test` suite using a fake model.

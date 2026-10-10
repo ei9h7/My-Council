@@ -43,9 +43,16 @@
       <div id="seats" class="seats"></div>
     </section>
 
-    <section class="panel">
+    <section id="askPanel" class="panel">
       <label for="question">Your question</label>
       <textarea id="question" rows="4" placeholder="e.g. Should I replace my 12-year-old furnace now or wait until it fails?"></textarea>
+      <div class="attach">
+        <label for="files" class="button">Attach evidence</label>
+        <input id="files" type="file" multiple hidden />
+        <span class="hint">Optional. PDF, Word, images or text files — or drop them here. Read in your browser, then sent to the models with your question.</span>
+      </div>
+      <ul id="attachList" class="attach-list"></ul>
+      <p id="attachWarn" class="hint warn"></p>
       <div class="row actions">
         <button id="go" type="button" class="primary">Convene the council</button>
         <button id="stop" type="button" hidden>Stop</button>
