@@ -28,6 +28,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body {
   margin: 0;
   background: var(--bg);
@@ -76,8 +77,36 @@ button {
   cursor: pointer;
 }
 button:disabled { opacity: 0.5; cursor: default; }
+label.button {
+  display: inline-block;
+  margin: 0;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-weight: 400;
+  font-size: 1rem;
+  cursor: pointer;
+}
+label.button.disabled { opacity: 0.5; pointer-events: none; }
 button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
 .actions { margin-top: 12px; }
+
+.attach { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: 10px; }
+.attach .hint { flex: 1 1 240px; }
+.attach-list { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-direction: column; gap: 6px; }
+.attach-list li {
+  display: flex; gap: 8px; align-items: center;
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
+  font-size: 0.9rem; overflow-wrap: anywhere;
+}
+.attach-list .name { font-weight: 600; }
+.attach-list .note { color: var(--muted); flex: 1; }
+.attach-list li.error .note { color: var(--none); }
+.attach-list button { padding: 2px 8px; line-height: 1.2; }
+.hint.warn { color: var(--partial); }
+.hint.warn:empty { display: none; }
+#askPanel.dragging { outline: 2px dashed var(--accent); outline-offset: -6px; }
 
 .presets { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
 .presets span { color: var(--muted); font-size: 0.9rem; }
