@@ -1,0 +1,11 @@
+{
+  "name": "my-council",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Three AIs debate your question over OpenRouter and report whether they reached consensus.",
+  "type": "module",
+  "scripts": {
+    "start": "npx --yes serve@14.2.4 -l 8080 .",
+    "test": "node --test test/*.test.js"
+  }
+}

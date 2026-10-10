@@ -1,0 +1,125 @@
+:root {
+  --bg: #f6f5f2;
+  --panel: #ffffff;
+  --text: #1d1d1f;
+  --muted: #6b6b70;
+  --border: #e2e0db;
+  --accent: #3b5bdb;
+  --accent-text: #ffffff;
+  --full: #2b8a3e;
+  --partial: #e8890c;
+  --none: #c92a2a;
+  --code: #f0eee9;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141416;
+    --panel: #1e1e21;
+    --text: #ececef;
+    --muted: #9a9aa2;
+    --border: #2f2f34;
+    --accent: #748ffc;
+    --accent-text: #0b0b0d;
+    --full: #51cf66;
+    --partial: #fcc419;
+    --none: #ff6b6b;
+    --code: #2a2a2f;
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+header, main { max-width: 1200px; margin: 0 auto; padding: 0 16px; }
+header { padding-top: 24px; }
+h1 { margin: 0; font-size: 1.8rem; }
+.tagline { margin: 4px 0 16px; color: var(--muted); }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+details.panel > summary { cursor: pointer; font-weight: 600; }
+details[open].panel > summary { margin-bottom: 12px; }
+
+label { display: block; font-weight: 600; font-size: 0.9rem; margin-bottom: 10px; }
+label.check { display: flex; gap: 8px; align-items: center; font-weight: 400; }
+input, select, textarea, button { font: inherit; color: inherit; }
+input, select, textarea {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+input[type="checkbox"] { width: auto; margin: 0; }
+textarea { resize: vertical; }
+.hint { color: var(--muted); font-size: 0.85rem; margin: 4px 0; }
+.hint a { color: var(--accent); }
+.row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.row > label { flex: 1 1 220px; }
+
+button {
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+.actions { margin-top: 12px; }
+
+.presets { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.presets span { color: var(--muted); font-size: 0.9rem; }
+
+.seats, .round-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 800px) { .seats, .round-grid { grid-template-columns: 1fr; } }
+.seat { border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+.seat h3 { margin: 0 0 8px; font-size: 1rem; }
+
+.round h2 { font-size: 1.1rem; margin: 24px 0 8px; }
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+.card header { padding: 0; margin-bottom: 8px; }
+.card .who { font-weight: 600; }
+.card .model { color: var(--muted); font-size: 0.8rem; }
+.card .body { font-size: 0.95rem; }
+.card .body p { margin: 0 0 0.6em; }
+.card .body pre, .card .body code { background: var(--code); border-radius: 4px; }
+.card .body pre { padding: 8px; overflow-x: auto; }
+.card .body code { padding: 1px 4px; }
+.card.error .body { color: var(--none); }
+.card.thinking .body::after { content: "▍"; animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  border: 1px solid currentColor;
+}
+.badge.full { color: var(--full); }
+.badge.partial { color: var(--partial); }
+.badge.none { color: var(--none); }
+
+.verdict h2 { margin: 0 0 8px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.verdict .rec { font-size: 1.05rem; padding: 12px; border-left: 4px solid var(--accent); background: var(--bg); border-radius: 6px; }
+.verdict ul { padding-left: 1.2em; }

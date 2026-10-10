@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>My Council</title>
+  <link rel="stylesheet" href="src/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>My Council</h1>
+    <p class="tagline">Three AIs debate your question, then report whether they agree.</p>
+  </header>
+
+  <main>
+    <details id="settings" class="panel">
+      <summary>Settings</summary>
+      <label>OpenRouter API key
+        <input id="apiKey" type="password" autocomplete="off" placeholder="sk-or-…" />
+      </label>
+      <p class="hint">Stored only in this browser (localStorage) and sent only to openrouter.ai.
+        Get one at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>.</p>
+      <div class="row">
+        <label>Debate rounds after opening answers
+          <input id="rounds" type="number" min="0" max="5" value="3" />
+        </label>
+        <label class="check"><input id="earlyStop" type="checkbox" checked /> Stop early when all three fully agree</label>
+      </div>
+      <label>Chair model (writes the final summary)
+        <input id="judgeModel" list="modelList" />
+      </label>
+      <p id="estimate" class="hint"></p>
+    </details>
+
+    <section class="panel">
+      <div class="presets">
+        <span>Presets:</span>
+        <button type="button" data-preset="assistants">Claude / ChatGPT / Gemini</button>
+        <button type="button" data-preset="personas">Money / Time / Stress</button>
+        <button type="button" data-preset="mixed">Both mixed</button>
+        <button type="button" data-preset="budget">Budget</button>
+      </div>
+      <div id="seats" class="seats"></div>
+    </section>
+
+    <section class="panel">
+      <label for="question">Your question</label>
+      <textarea id="question" rows="4" placeholder="e.g. Should I replace my 12-year-old furnace now or wait until it fails?"></textarea>
+      <div class="row actions">
+        <button id="go" type="button" class="primary">Convene the council</button>
+        <button id="stop" type="button" hidden>Stop</button>
+        <button id="export" type="button" hidden>Download transcript</button>
+        <span id="cost" class="hint"></span>
+      </div>
+      <p id="status" class="hint" role="status"></p>
+    </section>
+
+    <section id="verdict" class="panel verdict" hidden></section>
+    <section id="rounds-out"></section>
+  </main>
+
+  <datalist id="modelList"></datalist>
+
+  <template id="seatTpl">
+    <div class="seat">
+      <h3></h3>
+      <label>Model <input class="model" list="modelList" /></label>
+      <label>Persona <select class="persona"></select></label>
+      <textarea class="customPersona" rows="2" placeholder="Describe this member's priorities…" hidden></textarea>
+    </div>
+  </template>
+
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>
