@@ -16,8 +16,8 @@ let running = false;
 let sessions = []; // finished sessions in the current chain: [{title, userQuestion, attachments, transcript, verdict, clarifications, summary}]
 let earlierEvidence = []; // ready evidence entries used anywhere in this chain, for "re-attach"
 
-// The hosted build replaces this with a proxy endpoint and a login; see README "Hosted mode".
-export const backend = { hosted: false, complete: null };
+// The hosted build (see the hosted branch) points this at its proxy and signs requests with a login token.
+export const backend = { hosted: false, endpoint: undefined, getToken: undefined };
 
 // ---------- settings ----------
 
@@ -591,8 +591,12 @@ function readConfig(statusEl) {
     statusEl.textContent = 'Every member needs a model.';
     return null;
   }
-  const complete =
-    backend.complete ?? makeComplete({ apiKey: settings.apiKey, pricing: (id) => price(id) });
+  const complete = makeComplete({
+    apiKey: settings.apiKey,
+    endpoint: backend.endpoint,
+    getToken: backend.getToken,
+    pricing: (id) => price(id),
+  });
   return { members, judgeModel: settings.chair || DEFAULT_CHAIR, complete };
 }
 
@@ -965,8 +969,13 @@ export function start() {
   wireSettings();
   renderCouncil();
   updateWelcome();
-  if (backend.hosted) $('connectSection').hidden = true;
-  else if (settings.apiKey) verifyKey();
+  if (backend.hosted) {
+    // The hosted proxy holds the key and only accepts the curated models.
+    $('connectSection').hidden = true;
+    settings.anyModel = false;
+    for (const id of ['anyModel', 'cachingOnly']) $(id).closest('.switch').hidden = true;
+    renderCouncil();
+  } else if (settings.apiKey) verifyKey();
 
   wireDrop($('askPanel'), mainBox);
   wireDrop($('followPanel'), followBox);
