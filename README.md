@@ -63,6 +63,37 @@ Pick a style, then a model per seat from a short list:
 
 The model lists (`src/catalog.js`) offer each family's "· latest" alias (OpenRouter keeps it pointed at the newest Sonnet, GPT Sol, Gemini Pro, …) plus a couple of fixed earlier versions, and a fast & cheap option. `$`–`$$$$` shows relative price.
 
+## Hosted mode (this branch)
+
+This branch runs the app on **your** OpenRouter key for people you approve, with no key in the browser. It stays serverless: static files plus one Firebase Cloud Function.
+
+**Why not just put the key in the page behind a login?** Anything shipped to the browser can be read by anyone who opens the page's source, login or not. So the key lives in the function's secret store, and the function checks who is asking before forwarding the call.
+
+How it works:
+
+- People sign in with Google (Firebase Auth). `src/hosted.js` shows the sign-in screen and asks the function whether the account is approved.
+- `functions/index.js` (`api`) verifies the Firebase token, checks `allowedUsers/{email}` in Firestore, enforces a monthly budget per person, forwards the request to OpenRouter with your key, and streams the answer back. It only accepts the curated models in `src/catalog.js` and only the request fields the app sends, so the key can't be used for anything else.
+- Every call's cost is added to `usage/{uid}/months/{yyyy-mm}`. That's the ledger a paid tier would bill from (cost × your margin).
+- The "any OpenRouter model" option and the key settings are hidden in this build.
+
+### Set it up (one time, about 15 minutes)
+
+1. Create a project at [console.firebase.google.com](https://console.firebase.google.com) and upgrade it to the **Blaze** (pay-as-you-go) plan. Cloud Functions need it; at testing volumes it usually costs nothing beyond OpenRouter.
+2. **Authentication → Sign-in method:** enable Google. Under Settings → Authorized domains, add the domain you'll serve from (e.g. `<project>.web.app` is there by default; add `<user>.github.io` if you use Pages).
+3. **Firestore Database:** create it (production mode).
+4. **Project settings → General → Your apps:** add a Web app and copy its config into `src/hosted-config.js`. Put your project ID in `.firebaserc`.
+5. Install the CLI and log in: `npm i -g firebase-tools && firebase login`.
+6. Store your OpenRouter key as a secret: `firebase functions:secrets:set OPENROUTER_API_KEY` (paste the key when asked). Use a dedicated key with a credit limit.
+7. Deploy: `cd functions && npm install && cd .. && firebase deploy`. It prints the function URL; put it in `API_BASE` in `src/hosted-config.js` and run `firebase deploy --only hosting` again. The app is then live at `https://<project>.web.app`.
+
+### Approve a tester
+
+In the Firebase console → Firestore → start a collection `allowedUsers`, add a document whose **ID is the person's Google email in lowercase**, with an optional number field `monthlyLimitUsd` (default $5). Set a boolean `disabled: true` to revoke. Their usage shows up under `usage/<uid>/months/<yyyy-mm>` (`cost`, `calls`, `email`).
+
+### Toward a paid version
+
+The pieces are in place: per-user identity, a server-side gate on every call, and a cost ledger. Next steps would be Stripe Checkout for credit packs (a second function that receives Stripe's webhook and adds to a `balance` field), the proxy checking `balance` instead of `monthlyLimitUsd`, and charging `cost × margin` per call. See FEATUREREQUESTS.md #17.
+
 ## Run it
 
 **Hosted (recommended):** in the repo's Settings → Pages, set Source to **GitHub Actions**. Each push to `main` runs the tests and publishes the app at `https://<user>.github.io/My-Council/`. It works on a phone.

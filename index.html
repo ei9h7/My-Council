@@ -38,7 +38,14 @@
     </div>
   </header>
 
-  <main>
+  <section id="gate" class="card gate" hidden>
+    <h2></h2>
+    <p></p>
+    <button type="button" class="btn filled sign-in">Sign in with Google</button>
+    <button type="button" class="btn outlined sign-out">Use a different account</button>
+  </section>
+
+  <main hidden>
     <section id="welcome" class="card welcome" hidden>
       <div>
         <h2>Welcome to My Council</h2>
@@ -220,6 +227,7 @@
     </div>
   </template>
 
-  <script type="module" src="src/app.js"></script>
+  <script>window.MY_COUNCIL_DEFER = true; // hosted.js starts the app after sign-in</script>
+  <script type="module" src="src/hosted.js"></script>
 </body>
 </html>

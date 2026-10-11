@@ -1,0 +1,15 @@
+{
+  "functions": [
+    {
+      "source": "functions",
+      "runtime": "nodejs22",
+      "predeploy": ["cp src/catalog.js functions/catalog.js"],
+      "ignore": ["node_modules", ".git"]
+    }
+  ],
+  "firestore": { "rules": "firestore.rules" },
+  "hosting": {
+    "public": ".",
+    "ignore": ["firebase.json", "firestore.rules", ".firebaserc", "functions/**", "test/**", "**/.*", "**/node_modules/**", "*.md", "package.json"]
+  }
+}
