@@ -26,6 +26,7 @@
         </label>
         <label class="check"><input id="earlyStop" type="checkbox" checked /> Stop early when all three fully agree</label>
       </div>
+      <label class="check"><input id="clarify" type="checkbox" checked /> Let members ask me a clarifying question after round 1</label>
       <label>Chair model (writes the final summary)
         <input id="judgeModel" list="modelList" />
       </label>
@@ -62,8 +63,31 @@
       <p id="status" class="hint" role="status"></p>
     </section>
 
-    <section id="verdict" class="panel verdict" hidden></section>
-    <section id="rounds-out"></section>
+    <div id="sessions"></div>
+
+    <section id="followPanel" class="panel follow" hidden>
+      <h2>Follow up</h2>
+      <p class="hint">Something still unresolved, or something to add? A short summary of this session is attached automatically (final positions and verdict, not the full transcript), so the follow-up stays cheap.</p>
+      <label for="followNote">What should they know, or why are you following up?</label>
+      <textarea id="followNote" rows="3" placeholder="e.g. Gemini is wrong about the model — see the screenshot. Focus on whether to book service now."></textarea>
+      <div class="attach">
+        <label for="followFiles" class="button">Attach evidence</label>
+        <input id="followFiles" type="file" multiple hidden />
+        <button id="reattach" type="button" hidden>Re-attach previous files</button>
+        <span class="hint">Optional. Files from the last session aren't carried over unless you re-attach them.</span>
+      </div>
+      <ul id="followAttachList" class="attach-list"></ul>
+      <p id="followAttachWarn" class="hint warn"></p>
+      <details class="summary-view">
+        <summary>Session summary that will be sent</summary>
+        <pre id="summaryText"></pre>
+      </details>
+      <div class="row actions">
+        <button id="followGo" type="button" class="primary">Convene follow-up</button>
+        <span id="followEstimate" class="hint"></span>
+      </div>
+      <p id="followStatus" class="hint" role="status"></p>
+    </section>
   </main>
 
   <datalist id="modelList"></datalist>

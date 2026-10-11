@@ -1,4 +1,4 @@
-import { PERSONAS, runCouncil, transcriptMarkdown } from './council.js';
+import { PERSONAS, runCouncil, transcriptMarkdown, sessionSummary } from './council.js';
 import { listModels, makeComplete } from './openrouter.js';
 import { renderMarkdown } from './markdown.js';
 import { ACCEPT, readAttachment } from './attachments.js';
@@ -40,9 +40,9 @@ const PRESETS = {
 
 let models = [];
 let controller = null;
-let lastRun = null;
-let evidence = []; // [{id, name, status:'reading'|'ready'|'error', note, items, chars, images}]
-let nextEvidenceId = 1;
+let running = false;
+let sessions = []; // finished sessions in the current chain: [{title, userQuestion, attachments, transcript, verdict, clarifications, summary}]
+let earlierEvidence = []; // ready evidence entries used anywhere in this chain, for "re-attach"
 
 // ---------- persistence ----------
 
@@ -61,6 +61,7 @@ function save() {
         apiKey: $('apiKey').value.trim(),
         rounds: $('rounds').value,
         earlyStop: $('earlyStop').checked,
+        clarify: $('clarify').checked,
         judgeModel: $('judgeModel').value.trim(),
         members: readSeats(),
       }),
@@ -86,11 +87,11 @@ function buildSeats() {
     const custom = seat.querySelector('.customPersona');
     sel.addEventListener('change', () => {
       custom.hidden = sel.value !== 'custom';
-      updateEstimate();
+      refreshEstimates();
       save();
     });
     seat.querySelector('.model').addEventListener('change', () => {
-      updateEstimate();
+      refreshEstimates();
       save();
     });
     custom.addEventListener('change', save);
@@ -122,19 +123,131 @@ function writeSeats(members) {
   });
 }
 
+// ---------- evidence boxes (the question box and the follow-up box each have one) ----------
+
+function createEvidenceBox({ list, warn, input, label, onChange }) {
+  let entries = [];
+  let nextId = 1;
+  let disabled = false;
+
+  function renderList() {
+    list.innerHTML = '';
+    for (const e of entries) {
+      const li = document.createElement('li');
+      li.className = e.status;
+      li.innerHTML = '<span class="name"></span><span class="note"></span><button type="button" aria-label="Remove">✕</button>';
+      li.querySelector('.name').textContent = e.name;
+      li.querySelector('.note').textContent =
+        e.status === 'reading' ? 'reading…' : e.status === 'error' ? e.note : `${e.note}${e.chars ? ` · ${e.chars < 4000 ? '<1k' : `~${Math.round(e.chars / 4000)}k`} tokens` : ''}`;
+      const remove = li.querySelector('button');
+      remove.disabled = disabled;
+      remove.addEventListener('click', () => {
+        entries = entries.filter((x) => x !== e);
+        render();
+      });
+      list.append(li);
+    }
+  }
+  function render() {
+    renderList();
+    onChange();
+  }
+
+  const box = {
+    ready: () => entries.filter((e) => e.status === 'ready'),
+    reading: () => entries.some((e) => e.status === 'reading'),
+    items: () => box.ready().flatMap((e) => e.items),
+    has: (name) => entries.some((e) => e.name === name),
+    clear() {
+      entries = [];
+      render();
+    },
+    addEntries(ready) {
+      entries.push(...ready.map((e) => ({ ...e, id: nextId++ })));
+      render();
+    },
+    async addFiles(files) {
+      const added = [...files].map((file) => ({ id: nextId++, name: file.name, status: 'reading', file }));
+      entries.push(...added);
+      render();
+      await Promise.all(
+        added.map(async (e) => {
+          try {
+            Object.assign(e, await readAttachment(e.file), { status: 'ready' });
+          } catch (err) {
+            Object.assign(e, { status: 'error', note: String(err?.message ?? err).replace(`${e.name}: `, '') });
+          }
+          delete e.file;
+          render();
+        }),
+      );
+    },
+    setDisabled(d) {
+      disabled = d;
+      input.disabled = d;
+      label.classList.toggle('disabled', d);
+      renderList();
+    },
+    updateWarn() {
+      const images = box.ready().some((e) => e.images);
+      const blind = images ? readSeats().filter((m) => m.vision === false) : [];
+      warn.textContent = blind.length
+        ? `Can't see images: ${blind.map((m) => m.model).join(', ')}. ${blind.length === 1 ? 'That member' : 'Those members'} will be told images exist but won't see them — pick an image-capable model to fix.`
+        : '';
+    },
+  };
+  input.accept = ACCEPT;
+  input.addEventListener('change', () => {
+    box.addFiles(input.files);
+    input.value = '';
+  });
+  return box;
+}
+
+const mainBox = createEvidenceBox({
+  list: $('attachList'),
+  warn: $('attachWarn'),
+  input: $('files'),
+  label: document.querySelector('label[for="files"]'),
+  onChange: () => refreshEstimates(),
+});
+const followBox = createEvidenceBox({
+  list: $('followAttachList'),
+  warn: $('followAttachWarn'),
+  input: $('followFiles'),
+  label: document.querySelector('label[for="followFiles"]'),
+  onChange: () => refreshEstimates(),
+});
+
+function wireDrop(panel, box) {
+  panel.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer?.types.includes('Files') || running) return;
+    e.preventDefault();
+    panel.classList.add('dragging');
+  });
+  panel.addEventListener('dragleave', (e) => {
+    if (!panel.contains(e.relatedTarget)) panel.classList.remove('dragging');
+  });
+  panel.addEventListener('drop', (e) => {
+    panel.classList.remove('dragging');
+    if (!e.dataTransfer?.files.length || running) return;
+    e.preventDefault();
+    box.addFiles(e.dataTransfer.files);
+  });
+}
+
 // ---------- cost estimate ----------
 
-function updateEstimate() {
+function estimateText(ready, extraChars, noun) {
   const rounds = Number($('rounds').value) || 0;
   const members = readSeats();
   const calls = members.length * (1 + rounds) + 1;
-  let text = `Up to ${calls} model calls per question.`;
+  let text = `Up to ${calls} model calls per ${noun}.`;
   // Rough: ~500 output tokens per answer; each later round re-sends the history plus the others' answers.
   const price = (id) => models.find((m) => m.id === id);
   let est = 0;
   let known = true;
-  const ready = evidence.filter((e) => e.status === 'ready');
-  const textTokens = ready.reduce((s, e) => s + e.chars, 0) / 4;
+  const textTokens = (ready.reduce((s, e) => s + e.chars, 0) + extraChars) / 4;
   const imageCount = ready.reduce((s, e) => s + e.images, 0);
   for (const m of members) {
     const p = price(m.model);
@@ -147,64 +260,26 @@ function updateEstimate() {
   if (j) est += (members.length * (1 + rounds) * 500 * j.prompt + 600 * j.completion) / 1e6;
   else known = false;
   if (models.length && est > 0) text += ` Rough cost: ~$${est.toFixed(est < 0.1 ? 3 : 2)}${known ? '' : ' (some models unpriced)'}.`;
-  if (ready.length) text += ` Includes ${textTokens < 1000 ? '<1k' : `~${Math.round(textTokens / 1000)}k`} tokens of evidence${imageCount ? ` and ${imageCount} image${imageCount > 1 ? 's' : ''}` : ''}, re-sent each round.`;
-  $('estimate').textContent = text;
-  updateAttachWarn();
+  if (ready.length || extraChars) text += ` Includes ${textTokens < 1000 ? '<1k' : `~${Math.round(textTokens / 1000)}k`} tokens of evidence${imageCount ? ` and ${imageCount} image${imageCount > 1 ? 's' : ''}` : ''}, re-sent each round.`;
+  return text;
 }
 
-// ---------- evidence ----------
-
-function renderEvidence() {
-  const list = $('attachList');
-  list.innerHTML = '';
-  for (const e of evidence) {
-    const li = document.createElement('li');
-    li.className = e.status;
-    li.innerHTML = '<span class="name"></span><span class="note"></span><button type="button" aria-label="Remove">✕</button>';
-    li.querySelector('.name').textContent = e.name;
-    li.querySelector('.note').textContent =
-      e.status === 'reading' ? 'reading…' : e.status === 'error' ? e.note : `${e.note}${e.chars ? ` · ${e.chars < 4000 ? '<1k' : `~${Math.round(e.chars / 4000)}k`} tokens` : ''}`;
-    li.querySelector('button').addEventListener('click', () => {
-      evidence = evidence.filter((x) => x !== e);
-      renderEvidence();
-    });
-    list.append(li);
+function refreshEstimates() {
+  $('estimate').textContent = estimateText(mainBox.ready(), 0, 'question');
+  mainBox.updateWarn();
+  if (!$('followPanel').hidden) {
+    $('followEstimate').textContent = estimateText(followBox.ready(), sessions.at(-1)?.summary.length ?? 0, 'follow-up');
+    followBox.updateWarn();
   }
-  updateEstimate();
-}
-
-function updateAttachWarn() {
-  const images = evidence.some((e) => e.status === 'ready' && e.images);
-  const blind = images ? readSeats().filter((m) => m.vision === false) : [];
-  $('attachWarn').textContent = blind.length
-    ? `Can't see images: ${blind.map((m) => m.model).join(', ')}. ${blind.length === 1 ? 'That member' : 'Those members'} will be told images exist but won't see them — pick an image-capable model to fix.`
-    : '';
-}
-
-async function addFiles(files) {
-  const added = [...files].map((file) => ({ id: nextEvidenceId++, name: file.name, status: 'reading', file }));
-  evidence.push(...added);
-  renderEvidence();
-  await Promise.all(
-    added.map(async (e) => {
-      try {
-        Object.assign(e, await readAttachment(e.file), { status: 'ready' });
-      } catch (err) {
-        Object.assign(e, { status: 'error', note: String(err?.message ?? err).replace(`${e.name}: `, '') });
-      }
-      delete e.file;
-      renderEvidence();
-    }),
-  );
 }
 
 // ---------- rendering ----------
 
-function roundSection(round) {
+function roundSection(parent, round) {
   const sec = document.createElement('div');
   sec.className = 'round';
   sec.innerHTML = `<h2>Round ${round}${round === 1 ? ' — opening answers' : ' — responding to each other'}</h2><div class="round-grid"></div>`;
-  $('rounds-out').append(sec);
+  parent.append(sec);
   return sec.querySelector('.round-grid');
 }
 
@@ -221,8 +296,7 @@ function badge(level) {
   return level ? `<span class="badge ${level}">${level}</span>` : '';
 }
 
-function showVerdict(verdict) {
-  const box = $('verdict');
+function showVerdict(box, verdict) {
   box.hidden = false;
   const v = verdict.parsed;
   if (!v) {
@@ -240,50 +314,201 @@ function showVerdict(verdict) {
     ${v.positions?.length ? `<h3>Final positions</h3>${list(v.positions.map((p) => `**${p.member}:** ${p.final_stance}`))}` : ''}`;
 }
 
-function setRunning(running) {
-  $('go').disabled = running;
-  $('stop').hidden = !running;
-  for (const el of document.querySelectorAll('#seats input, #seats select, #seats textarea, .presets button, #attachList button')) el.disabled = running;
-  $('files').disabled = running;
-  document.querySelector('label[for="files"]').classList.toggle('disabled', running);
+function setRunning(r) {
+  running = r;
+  $('go').disabled = r;
+  $('followGo').disabled = r;
+  $('reattach').disabled = r;
+  $('followNote').disabled = r;
+  for (const el of document.querySelectorAll('#seats input, #seats select, #seats textarea, .presets button')) el.disabled = r;
+  mainBox.setDisabled(r);
+  followBox.setDisabled(r);
+}
+
+function newSession(title, withBar) {
+  const el = document.createElement('div');
+  el.className = 'session';
+  el.innerHTML = `${title ? '<h2 class="session-title"></h2>' : ''}
+    <div class="session-bar"${withBar ? '' : ' hidden'}><span class="status hint"></span><span class="cost hint"></span><button type="button" class="stop">Stop</button></div>
+    <section class="panel verdict" hidden></section><div class="rounds"></div>`;
+  if (title) el.querySelector('.session-title').textContent = title;
+  el.querySelector('.stop').addEventListener('click', () => controller?.abort());
+  $('sessions').append(el);
+  return el;
+}
+
+// ---------- follow-up panel ----------
+
+function showFollowUp(verdict, reset) {
+  const panel = $('followPanel');
+  panel.hidden = false;
+  panel.classList.toggle('attention', verdict?.parsed?.consensus !== 'full');
+  if (reset) {
+    $('followNote').value = '';
+    $('followStatus').textContent = '';
+    followBox.clear();
+  }
+  $('summaryText').textContent = sessions.at(-1).summary;
+  const n = earlierEvidence.filter((e) => !followBox.has(e.name)).length;
+  $('reattach').hidden = n === 0;
+  $('reattach').textContent = `Re-attach earlier files (${n})`;
+  refreshEstimates();
+}
+
+function hideFollowUp() {
+  $('followPanel').hidden = true;
+  $('followNote').value = '';
+  followBox.clear();
 }
 
 // ---------- run ----------
 
-async function convene() {
+function readConfig(statusEl) {
   const apiKey = $('apiKey').value.trim();
-  const question = $('question').value.trim();
   const members = readSeats();
   if (!apiKey) {
     $('settings').open = true;
     $('apiKey').focus();
-    $('status').textContent = 'Add your OpenRouter API key first.';
-    return;
+    statusEl.textContent = 'Add your OpenRouter API key first.';
+    return null;
   }
+  if (members.some((m) => !m.model)) {
+    statusEl.textContent = 'Every member needs a model.';
+    return null;
+  }
+  return { apiKey, members, judgeModel: $('judgeModel').value.trim() || members[0].model };
+}
+
+async function convene() {
+  const question = $('question').value.trim();
+  const config = readConfig($('status'));
+  if (!config) return;
   if (!question) return void $('question').focus();
-  if (members.some((m) => !m.model)) return void ($('status').textContent = 'Every member needs a model.');
-  if (evidence.some((e) => e.status === 'reading')) return void ($('status').textContent = 'Still reading your attachments — try again in a moment.');
-  const attachments = evidence.filter((e) => e.status === 'ready').flatMap((e) => e.items);
-  const judgeModel = $('judgeModel').value.trim() || members[0].model;
+  if (mainBox.reading()) return void ($('status').textContent = 'Still reading your attachments — try again in a moment.');
   save();
 
-  $('rounds-out').innerHTML = '';
-  $('verdict').hidden = true;
+  sessions = [];
+  earlierEvidence = [];
+  $('sessions').innerHTML = '';
+  hideFollowUp();
   $('export').hidden = true;
   $('cost').textContent = '';
+  await runSession({
+    config,
+    kind: 'new',
+    userQuestion: question,
+    engineQuestion: question,
+    attachments: mainBox.items(),
+    evidence: mainBox.ready(),
+    previous: null,
+  });
+}
+
+async function conveneFollowUp() {
+  const config = readConfig($('followStatus'));
+  if (!config) return;
+  if (followBox.reading()) return void ($('followStatus').textContent = 'Still reading your attachments — try again in a moment.');
+  const previous = sessions.at(-1);
+  if (!previous) return;
+  const note = $('followNote').value.trim();
+  save();
+  $('followStatus').textContent = '';
+  hideFollowUpWhileRunning();
+  await runSession({
+    config,
+    kind: 'follow',
+    title: `Follow-up ${sessions.length}`,
+    userQuestion: note || '(no note)',
+    engineQuestion:
+      'This continues an earlier council session; a summary of it is attached as "previous-session.md". ' +
+      (note
+        ? `The user's follow-up: ${note}`
+        : 'The user gave no reason for the follow-up; focus on whatever was still contested or unresolved.'),
+    attachments: [{ name: 'previous-session.md', kind: 'text', text: previous.summary }, ...followBox.items()],
+    evidence: followBox.ready(),
+    previous: previous.summary,
+  });
+}
+
+// The panel stays out of the way while a follow-up streams in, but its draft is kept in case the run fails.
+function hideFollowUpWhileRunning() {
+  $('followPanel').hidden = true;
+}
+
+async function runSession({ config, kind, title, userQuestion, engineQuestion, attachments, evidence, previous }) {
+  const { apiKey, members, judgeModel } = config;
+  const el = newSession(title, kind === 'follow');
+  const ui =
+    kind === 'new'
+      ? { status: $('status'), cost: $('cost') }
+      : { status: el.querySelector('.status'), cost: el.querySelector('.cost') };
+  const stopBtn = kind === 'new' ? $('stop') : el.querySelector('.stop');
+  const roundsEl = el.querySelector('.rounds');
+  const verdictEl = el.querySelector('.verdict');
+  stopBtn.hidden = false;
   setRunning(true);
   controller = new AbortController();
+  if (kind === 'follow') el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   let grid = null;
   let cards = [];
   let buffers = [];
   let judgeChars = 0;
 
+  // Pauses the run until the user answers (or skips) the members' questions.
+  const askUser = (questions, signal) =>
+    new Promise((resolve, reject) => {
+      const panel = document.createElement('section');
+      panel.className = 'panel clarify';
+      panel.innerHTML = `<h2></h2>
+        <p class="hint">Answer what you can; blank is fine. Every member sees all the questions and answers before the next round.</p>
+        <div class="qs"></div>
+        <div class="row actions"><button type="button" class="primary send">Send answers</button><button type="button" class="skip">Skip — let them debate</button></div>`;
+      panel.querySelector('h2').textContent = questions.length === 1 ? 'The council has a question for you' : 'The council has questions for you';
+      const areas = questions.map((q) => {
+        const div = document.createElement('div');
+        div.className = 'q';
+        div.innerHTML = '<div class="asker"></div><div class="text"></div><textarea rows="2" placeholder="Your answer…"></textarea>';
+        div.querySelector('.asker').textContent = q.from;
+        div.querySelector('.text').textContent = q.question;
+        panel.querySelector('.qs').append(div);
+        return div.querySelector('textarea');
+      });
+      roundsEl.append(panel);
+      panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      areas[0].focus({ preventScroll: true });
+
+      const freeze = (answers) => {
+        panel.classList.add('done');
+        panel.querySelector('h2').textContent = answers ? 'Your answers to the council' : 'You skipped the council’s questions';
+        panel.querySelector('.hint').textContent = answers ? '' : 'The members will proceed on their own assumptions.';
+        panel.querySelector('.actions').remove();
+        panel.querySelectorAll('.q').forEach((div, i) => {
+          div.querySelector('textarea').replaceWith(
+            Object.assign(document.createElement('p'), { className: 'answer', textContent: answers?.[i] || '(no answer)' }),
+          );
+          if (!answers) div.querySelector('.answer').remove();
+        });
+      };
+      const onAbort = () => {
+        freeze(null);
+        reject(new DOMException('Aborted', 'AbortError'));
+      };
+      const done = (answers) => {
+        signal?.removeEventListener('abort', onAbort);
+        freeze(answers);
+        resolve(answers);
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      panel.querySelector('.send').addEventListener('click', () => done(areas.map((a) => a.value.trim())));
+      panel.querySelector('.skip').addEventListener('click', () => done(null));
+    });
+
   const onEvent = (e) => {
     switch (e.type) {
       case 'round-start':
-        $('status').textContent = `Round ${e.round} of ${e.totalRounds}…`;
-        grid = roundSection(e.round);
+        ui.status.textContent = `Round ${e.round} of ${e.totalRounds}…`;
+        grid = roundSection(roundsEl, e.round);
         cards = [];
         buffers = [];
         break;
@@ -301,7 +526,7 @@ async function convene() {
         c.classList.remove('thinking');
         c.querySelector('.body').innerHTML = renderMarkdown(e.entry.text);
         if (e.round > 1 && e.entry.agreement) c.querySelector('header').insertAdjacentHTML('beforeend', badge(e.entry.agreement));
-        if (e.cost) $('cost').textContent = `Spent so far: $${e.cost.toFixed(4)}`;
+        if (e.cost) ui.cost.textContent = `Spent so far: $${e.cost.toFixed(4)}`;
         break;
       }
       case 'member-error': {
@@ -311,51 +536,74 @@ async function convene() {
         c.querySelector('.body').textContent = e.entry.error;
         break;
       }
+      case 'clarify-start':
+        ui.status.textContent = 'Waiting for your answers…';
+        break;
       case 'early-stop':
-        $('status').textContent = `All three fully agreed after round ${e.round} — skipping the remaining rounds.`;
+        ui.status.textContent = `All three fully agreed after round ${e.round} — skipping the remaining rounds.`;
         break;
       case 'judge-start':
-        $('status').textContent = 'The chair is summarising the debate…';
+        ui.status.textContent = 'The chair is summarising the debate…';
         break;
       case 'judge-token':
         judgeChars += e.token.length;
-        $('status').textContent = `The chair is summarising the debate… (${judgeChars} chars)`;
+        ui.status.textContent = `The chair is summarising the debate… (${judgeChars} chars)`;
         break;
       case 'verdict':
-        showVerdict(e.verdict);
-        if (e.cost) $('cost').textContent = `Total cost: $${e.cost.toFixed(4)}`;
+        showVerdict(verdictEl, e.verdict);
+        if (e.cost) ui.cost.textContent = `Total cost: $${e.cost.toFixed(4)}`;
         break;
     }
   };
 
   try {
     const result = await runCouncil({
-      question,
+      question: engineQuestion,
       members,
       attachments,
       rounds: Number($('rounds').value) || 0,
       earlyStop: $('earlyStop').checked,
       judgeModel,
       complete: makeComplete(apiKey),
+      askUser: $('clarify').checked ? askUser : undefined,
       onEvent,
       signal: controller.signal,
     });
-    lastRun = { question, attachments, ...result };
-    $('status').textContent = 'Done.';
+    const summary = sessionSummary({
+      question: userQuestion,
+      clarifications: result.clarifications,
+      transcript: result.transcript,
+      verdict: result.verdict,
+      attachments,
+      previous,
+    });
+    sessions.push({ title, userQuestion, attachments, ...result, summary });
+    for (const e of evidence) if (!earlierEvidence.some((x) => x.name === e.name)) earlierEvidence.push(e);
+    ui.status.textContent = 'Done.';
     $('export').hidden = false;
-    $('verdict').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    verdictEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    showFollowUp(result.verdict, true);
   } catch (err) {
-    $('status').textContent = err?.name === 'AbortError' ? 'Stopped.' : `Error: ${err?.message ?? err}`;
-    for (const c of document.querySelectorAll('.card.thinking')) c.classList.remove('thinking');
+    ui.status.textContent = err?.name === 'AbortError' ? 'Stopped.' : `Error: ${err?.message ?? err}`;
+    for (const c of el.querySelectorAll('.card.thinking')) c.classList.remove('thinking');
+    // A failed follow-up leaves the panel open again with the draft intact.
+    if (sessions.length) showFollowUp(sessions.at(-1).verdict, false);
   } finally {
     setRunning(false);
+    stopBtn.hidden = true;
     controller = null;
+    refreshEstimates();
   }
 }
 
 function exportTranscript() {
-  if (!lastRun) return;
-  const md = transcriptMarkdown(lastRun.question, lastRun.transcript, lastRun.verdict, lastRun.attachments);
+  if (!sessions.length) return;
+  const md = sessions
+    .map((s, i) => {
+      const t = transcriptMarkdown(i === 0 ? s.userQuestion : `Follow-up: ${s.userQuestion}`, s.transcript, s.verdict, s.attachments, s.clarifications);
+      return i === 0 ? t : t.replace('# Council transcript', `# Follow-up ${i}`);
+    })
+    .join('\n\n---\n\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([md], { type: 'text/markdown' }));
   a.download = `council-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.md`;
@@ -370,6 +618,7 @@ const saved = load();
 $('apiKey').value = saved.apiKey ?? '';
 $('rounds').value = saved.rounds ?? 3;
 $('earlyStop').checked = saved.earlyStop ?? true;
+$('clarify').checked = saved.clarify ?? true;
 $('judgeModel').value = saved.judgeModel ?? MODELS.claude;
 writeSeats(saved.members?.length === 3 ? saved.members : PRESETS.mixed);
 if (!saved.apiKey) $('settings').open = true;
@@ -377,44 +626,34 @@ if (!saved.apiKey) $('settings').open = true;
 for (const btn of document.querySelectorAll('[data-preset]')) {
   btn.addEventListener('click', () => {
     writeSeats(PRESETS[btn.dataset.preset]);
-    updateEstimate();
+    refreshEstimates();
     save();
   });
 }
-for (const id of ['apiKey', 'rounds', 'earlyStop', 'judgeModel']) {
+for (const id of ['apiKey', 'rounds', 'earlyStop', 'clarify', 'judgeModel']) {
   $(id).addEventListener('change', () => {
-    updateEstimate();
+    refreshEstimates();
     save();
   });
 }
-$('files').accept = ACCEPT;
-$('files').addEventListener('change', () => {
-  addFiles($('files').files);
-  $('files').value = '';
-});
-const askPanel = $('askPanel');
-askPanel.addEventListener('dragover', (e) => {
-  if (!e.dataTransfer?.types.includes('Files') || $('go').disabled) return;
-  e.preventDefault();
-  askPanel.classList.add('dragging');
-});
-askPanel.addEventListener('dragleave', (e) => {
-  if (!askPanel.contains(e.relatedTarget)) askPanel.classList.remove('dragging');
-});
-askPanel.addEventListener('drop', (e) => {
-  askPanel.classList.remove('dragging');
-  if (!e.dataTransfer?.files.length || $('go').disabled) return;
-  e.preventDefault();
-  addFiles(e.dataTransfer.files);
+wireDrop($('askPanel'), mainBox);
+wireDrop($('followPanel'), followBox);
+$('reattach').addEventListener('click', () => {
+  followBox.addEntries(earlierEvidence.filter((e) => !followBox.has(e.name)));
+  $('reattach').hidden = true;
 });
 $('go').addEventListener('click', convene);
+$('followGo').addEventListener('click', conveneFollowUp);
 $('stop').addEventListener('click', () => controller?.abort());
 $('export').addEventListener('click', exportTranscript);
 $('question').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) convene();
 });
+$('followNote').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) conveneFollowUp();
+});
 
-updateEstimate();
+refreshEstimates();
 listModels()
   .then((list) => {
     models = list;
@@ -423,7 +662,7 @@ listModels()
       const price = m.prompt || m.completion ? ` — $${m.prompt.toFixed(2)}/$${m.completion.toFixed(2)} per M tokens` : '';
       dl.append(new Option(`${m.name}${price}`, m.id));
     }
-    updateEstimate();
+    refreshEstimates();
   })
   .catch(() => {
     $('estimate').textContent += ' (Could not load the model list — you can still type model IDs.)';

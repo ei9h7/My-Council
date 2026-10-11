@@ -7,11 +7,18 @@ Everything runs in your browser through [OpenRouter](https://openrouter.ai), so 
 ## How a session runs
 
 1. **Opening round.** Each member answers independently, at the same time.
-2. **Debate rounds** (3 by default, 0–5 allowed). Each member gets the other two members' latest answers as a follow-up in its own conversation, then responds. Every reply ends with a `STANCE:` line and an `AGREEMENT: full | partial | none` line.
-3. **Early stop** (on by default). If all three report `full` agreement before the last round, the remaining rounds are skipped to save money.
-4. **Verdict.** A chair model reads the whole transcript and returns: consensus (full / partial / none), a summary, the recommendation (only if there is consensus), the points they agreed on, the points still contested, and each member's final position.
+2. **Clarifying questions** (on by default). Each member may ask you one question, but only if your answer would change its recommendation and the question and attachments don't already settle it. If anyone asks, the run pauses and shows the questions. Answer what you can (blank is fine) or skip. Every member then sees all the questions and answers together with the others' opening answers. If nobody asks, there is no pause. Turn this off in Settings.
+3. **Debate rounds** (3 by default, 0–5 allowed). Each member gets the other two members' latest answers as a follow-up in its own conversation, then responds. Every reply ends with a `STANCE:` line and an `AGREEMENT: full | partial | none` line.
+4. **Early stop** (on by default). If all three report `full` agreement before the last round, the remaining rounds are skipped to save money.
+5. **Verdict.** A chair model reads the whole transcript (including your answers) and returns: consensus (full / partial / none), a summary, the recommendation (only if there is consensus), the points they agreed on, the points still contested, and each member's final position.
 
 With 3 debate rounds that comes to up to 13 model calls per question. The settings panel shows a rough cost estimate, and the app shows the actual spend reported by OpenRouter.
+
+## Following up
+
+After any verdict, a **Follow up** panel appears (highlighted when consensus was partial or none). Add a note, such as what the members got wrong, what you've since found out, or which contested point to focus on, and optionally attach files, then convene again.
+
+To keep it cheap, the members don't get the full transcript. A short summary of the previous session (about 1–2k tokens) is attached as `previous-session.md`: the question, your clarifications, each member's final stance, the chair's verdict, the points agreed and still contested, and the names of the evidence files. You can read it under "Session summary that will be sent". Files you attached earlier aren't carried over; **Re-attach earlier files** brings them back, and each one can be removed. Follow-ups appear below the earlier sessions, can be chained, and the transcript download covers all of them.
 
 ## Attaching evidence
 
@@ -67,7 +74,7 @@ Paste an OpenRouter key into Settings. It is saved in this browser's localStorag
 
 ## Files
 
-- `src/council.js`: the debate engine (rounds, follow-up prompts, stance parsing, early stop, verdict). It has no DOM and makes no network calls itself.
+- `src/council.js`: the debate engine (rounds, clarifying questions, follow-up prompts, stance parsing, early stop, verdict, session summaries). It has no DOM and makes no network calls itself.
 - `src/openrouter.js`: streaming chat completions and the model list.
 - `src/app.js`, `index.html`, `src/styles.css`: the UI.
 - `src/markdown.js`: a small Markdown renderer that escapes all HTML first.

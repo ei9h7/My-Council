@@ -46,6 +46,14 @@ export const PROTOCOL =
   'AGREEMENT: <full | partial | none> — how far you agree with the other members\' current stances ' +
   '(write "n/a" in the first round, before you have seen them).';
 
+// Appended to the round-1 user message only, and only when the user can be asked.
+export const CLARIFY_INSTRUCTION =
+  '\n\nBefore your STANCE line, you may ask the user ONE clarifying question, but only if the answer would ' +
+  'materially change your recommendation and neither the question nor the attached evidence already answers it. ' +
+  'Do not ask for things you can reasonably assume or that another member could settle. Write it as ' +
+  '"QUESTION: <your question>", or "QUESTION: none" if you do not need to ask. ' +
+  'The user will see every member\'s question and answer them before the next round.';
+
 export function systemPrompt(member) {
   const persona = PERSONAS[member.persona] ?? PERSONAS.balanced;
   const lens = member.persona === 'custom' ? (member.customPersona || '').trim() : persona.prompt;
@@ -67,13 +75,15 @@ export function displayName(member) {
  * @param {Array<{name:string, kind:'text'|'image', text?:string, dataUrl?:string, page?:number}>} attachments
  * @param {boolean} vision
  */
-export function openingMessage(question, attachments = [], vision = true) {
-  if (!attachments.length) return question;
+export function openingMessage(question, attachments = [], vision = true, clarify = false) {
+  const tail = clarify ? CLARIFY_INSTRUCTION : '';
+  if (!attachments.length) return question + tail;
   const texts = attachments.filter((a) => a.kind === 'text');
   const images = attachments.filter((a) => a.kind === 'image');
   const files = new Set(attachments.map((a) => a.name)).size;
   let body = `${question}\n\n---\nThe user attached ${files === 1 ? 'one file' : `${files} files`} as evidence.\n`;
   for (const a of texts) body += `\n<evidence name="${a.name}">\n${a.text}\n</evidence>\n`;
+  body += tail;
   if (images.length && !vision) {
     body += `\n(${images.length} image${images.length > 1 ? 's' : ''} — ${images.map(imageLabel).join(', ')} — ` +
       'could not be shown to you because your model does not accept images. Other members may have seen them.)\n';
@@ -94,6 +104,13 @@ export function attachmentSummary(attachments = []) {
   return names.length ? `Evidence attached: ${names.join(', ')}` : '';
 }
 
+/** The clarifying question a member asked, or null if none. */
+export function parseQuestion(text) {
+  const q = /^\s*\**QUESTION\**\s*:\s*\**\s*(.+)$/im.exec(text)?.[1]?.trim().replace(/\*+$/, '').trim();
+  if (!q || /^(none|n\/a|no questions?)\b/i.test(q)) return null;
+  return q;
+}
+
 export function parseStance(text) {
   const stance = /^\s*\**STANCE\**\s*:\s*\**\s*(.+)$/im.exec(text)?.[1]?.trim() ?? null;
   const raw = /^\s*\**AGREEMENT\**\s*:\s*\**\s*([a-z/]+)/im.exec(text)?.[1]?.toLowerCase() ?? null;
@@ -101,12 +118,27 @@ export function parseStance(text) {
   return { stance, agreement };
 }
 
-export function followUpPrompt(round, others, isLastRound) {
+/** Text of the user's answers to the council's clarifying questions, for the members and the chair. */
+export function clarificationsBlock(c) {
+  if (!c?.items?.length) return '';
+  if (c.skipped) {
+    return 'Some members asked clarifying questions, but the user chose not to answer. ' +
+      'Proceed on your best assumptions and state them.';
+  }
+  const lines = c.items.map(
+    (it) => `- Question (asked by ${it.from}): ${it.question}\n  Answer: ${it.answer || '(not answered — assume what you must, and say what you assumed)'}`,
+  );
+  return `The user answered the council's clarifying questions. Treat their answers as facts that override assumptions:\n${lines.join('\n')}`;
+}
+
+export function followUpPrompt(round, others, isLastRound, clarifications) {
   const blocks = others
     .map((o) => `### ${o.label}\n${o.text ?? '(no response this round — the call failed)'}`)
     .join('\n\n');
+  const clarified = clarificationsBlock(clarifications);
   return (
     `Round ${round}. Here is what the other council members said in the last round:\n\n${blocks}\n\n` +
+    (clarified ? `${clarified}\n\n` : '') +
     'Respond to their points: say where you now agree, where you still disagree and why, and give your ' +
     'updated answer. Change your position only for good reasons — do not cave just to agree.' +
     (isLastRound ? ' This is the final round, so make your position as clear as you can.' : '') +
@@ -130,13 +162,19 @@ export const JUDGE_PROMPT =
   'Use "partial" when they agree on the core recommendation but differ on material details. ' +
   'For "partial", give the recommendation they share and list the differences.';
 
-export function transcriptMarkdown(question, rounds, verdict, attachments = []) {
+export function transcriptMarkdown(question, rounds, verdict, attachments = [], clarifications = null) {
   const out = [`# Council transcript\n\n**Question:** ${question}\n`];
   const evidence = attachmentSummary(attachments);
   if (evidence) out.push(`\n_${evidence}_\n`);
   rounds.forEach((r, i) => {
     out.push(`\n## Round ${i + 1}${i === 0 ? ' — opening answers' : ''}\n`);
     for (const e of r) out.push(`\n### ${e.label}\n\n${e.text ?? `_Failed: ${e.error}_`}\n`);
+    if (i === 0 && clarifications?.items?.length) {
+      out.push('\n## Clarifications from the user\n');
+      if (clarifications.skipped) out.push('\n_The user chose not to answer._\n');
+      for (const it of clarifications.items)
+        out.push(`\n**${it.from} asked:** ${it.question}\n\n**Answer:** ${clarifications.skipped ? '_skipped_' : it.answer || '_not answered_'}\n`);
+    }
   });
   if (verdict) {
     out.push('\n## Verdict\n');
@@ -152,6 +190,50 @@ export function transcriptMarkdown(question, rounds, verdict, attachments = []) 
     }
   }
   return out.join('');
+}
+
+const SUMMARY_TITLE = '# Previous council session';
+
+/**
+ * A compact record of a finished session (about 1-2k tokens), attached to a follow-up
+ * instead of the full transcript. Holds final stances and the verdict, not the full answers.
+ */
+export function sessionSummary({ question, clarifications, transcript, verdict, attachments = [], previous = null }) {
+  const out = [`${SUMMARY_TITLE}\n\n**Question:** ${question}`];
+  if (clarifications?.items?.length) {
+    out.push(
+      clarifications.skipped
+        ? '**Clarifying questions:** the user chose not to answer.'
+        : '**Clarifications from the user:**\n' +
+            clarifications.items.map((it) => `- ${it.from} asked: ${it.question}\n  Answer: ${it.answer || '(not answered)'}`).join('\n'),
+    );
+  }
+  const names = [...new Set(attachments.map((a) => a.name))].filter((n) => n !== 'previous-session.md');
+  if (names.length) out.push(`**Evidence used:** ${names.join(', ')}`);
+
+  const members = transcript[0]?.map((e) => e.label) ?? [];
+  const stances = members.map((label, i) => {
+    for (let r = transcript.length - 1; r >= 0; r--) {
+      const st = transcript[r][i]?.stance;
+      if (st) return `- ${label}: ${st}`;
+    }
+    return `- ${label}: (no stance recorded)`;
+  });
+  if (stances.length) out.push(`**Where each member ended:**\n${stances.join('\n')}`);
+
+  const v = verdict?.parsed;
+  if (v) {
+    const label = { full: 'full consensus', partial: 'partial consensus', none: 'no consensus' }[v.consensus];
+    out.push(`**Chair's verdict:** ${label}. ${v.summary ?? ''}`.trim());
+    if (v.recommendation) out.push(`**Recommendation:** ${v.recommendation}`);
+    if (v.agreements?.length) out.push(`**Agreed:**\n${v.agreements.map((a) => `- ${a}`).join('\n')}`);
+    if (v.disagreements?.length) out.push(`**Still contested:**\n${v.disagreements.map((d) => `- ${d}`).join('\n')}`);
+  } else if (verdict?.text) {
+    out.push(`**Chair's verdict (unstructured):** ${verdict.text.slice(0, 1500)}`);
+  }
+  let text = out.join('\n\n');
+  if (previous) text += `\n\n---\n\n## Before that\n\n${previous.replace(`${SUMMARY_TITLE}\n\n`, '')}`;
+  return text;
 }
 
 export function parseVerdict(text) {
@@ -173,6 +255,9 @@ export function parseVerdict(text) {
  * @param {string} opts.question
  * @param {Array<{name:string, model:string, persona:string, customPersona?:string, vision?:boolean}>} opts.members
  * @param {Array<object>} [opts.attachments]  see openingMessage
+ * @param {(questions:Array<{from:string, question:string}>, signal?:AbortSignal) => Promise<string[]|null>} [opts.askUser]
+ *        If given, members may ask the user one clarifying question after round 1. The run pauses until this
+ *        resolves with one answer per question (blank = unanswered) or null (skip). Omit to disable.
  * @param {number} opts.rounds        debate rounds after the opening answers
  * @param {boolean} opts.earlyStop    stop once every member reports full agreement
  * @param {string} opts.judgeModel
@@ -188,13 +273,16 @@ export async function runCouncil({
   earlyStop = true,
   judgeModel,
   complete,
+  askUser,
   onEvent = () => {},
   signal,
 }) {
+  const clarify = typeof askUser === 'function' && rounds > 0;
+  let clarifications = null;
   const labels = members.map(displayName);
   const histories = members.map((m) => [
     { role: 'system', content: systemPrompt(m) },
-    { role: 'user', content: openingMessage(question, attachments, m.vision !== false) },
+    { role: 'user', content: openingMessage(question, attachments, m.vision !== false, clarify) },
   ]);
   const transcript = [];
   let cost = 0;
@@ -210,7 +298,7 @@ export async function runCouncil({
         const others = prev.filter((_, j) => j !== i);
         histories[i].push({
           role: 'user',
-          content: followUpPrompt(round, others, round === totalRounds),
+          content: followUpPrompt(round, others, round === totalRounds, round === 2 ? clarifications : null),
         });
       });
     }
@@ -226,7 +314,7 @@ export async function runCouncil({
             onToken: (t) => onEvent({ type: 'token', round, index: i, token: t }),
           });
           cost += res.cost ?? 0;
-          const entry = { label: labels[i], model: m.model, text: res.text, ...parseStance(res.text) };
+          const entry = { label: labels[i], model: m.model, text: res.text, ...parseStance(res.text), question: parseQuestion(res.text) };
           onEvent({ type: 'member-done', round, index: i, entry, cost });
           return entry;
         } catch (err) {
@@ -247,6 +335,22 @@ export async function runCouncil({
     const live = results.filter((r) => r.text);
     if (live.length === 0) throw new Error('Every council member failed this round. Check your API key and model IDs.');
 
+    if (round === 1 && clarify) {
+      const questions = live.filter((r) => r.question).map((r) => ({ from: r.label, question: r.question }));
+      if (questions.length) {
+        onEvent({ type: 'clarify-start', questions });
+        const answers = await askUser(questions, signal);
+        const skipped = !Array.isArray(answers);
+        clarifications = {
+          skipped,
+          items: questions.map((q, i) => ({ ...q, answer: skipped ? '' : String(answers[i] ?? '').trim() })),
+        };
+        // Answering nothing is the same as skipping.
+        if (!skipped && clarifications.items.every((it) => !it.answer)) clarifications.skipped = true;
+        onEvent({ type: 'clarify-done', clarifications });
+      }
+    }
+
     if (earlyStop && round > 1 && round < totalRounds && live.every((r) => r.agreement === 'full')) {
       onEvent({ type: 'early-stop', round });
       break;
@@ -254,7 +358,7 @@ export async function runCouncil({
   }
 
   onEvent({ type: 'judge-start' });
-  const judgeInput = transcriptMarkdown(question, transcript, null, attachments);
+  const judgeInput = transcriptMarkdown(question, transcript, null, attachments, clarifications);
   let verdict;
   try {
     const res = await complete({
@@ -274,5 +378,5 @@ export async function runCouncil({
   }
   onEvent({ type: 'verdict', verdict, cost });
 
-  return { transcript, verdict, cost };
+  return { transcript, verdict, cost, clarifications };
 }
