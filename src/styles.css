@@ -106,7 +106,7 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 .attach-list button { padding: 2px 8px; line-height: 1.2; }
 .hint.warn { color: var(--partial); }
 .hint.warn:empty { display: none; }
-#askPanel.dragging { outline: 2px dashed var(--accent); outline-offset: -6px; }
+.panel.dragging { outline: 2px dashed var(--accent); outline-offset: -6px; }
 
 .presets { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
 .presets span { color: var(--muted); font-size: 0.9rem; }
@@ -152,3 +152,24 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 .verdict h2 { margin: 0 0 8px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .verdict .rec { font-size: 1.05rem; padding: 12px; border-left: 4px solid var(--accent); background: var(--bg); border-radius: 6px; }
 .verdict ul { padding-left: 1.2em; }
+
+.session-title { font-size: 1.3rem; margin: 32px 0 8px; padding-top: 16px; border-top: 1px solid var(--border); }
+.session-bar { display: flex; gap: 12px; align-items: center; margin: 8px 0; }
+.session-bar:has(button[hidden]) .status:empty { display: none; }
+
+.clarify { border-color: var(--accent); margin-top: 16px; }
+.clarify h2 { margin: 0 0 4px; font-size: 1.1rem; }
+.clarify .q { margin: 14px 0; }
+.clarify .q .asker { font-weight: 600; }
+.clarify .q .text { margin: 2px 0 6px; overflow-wrap: anywhere; }
+.clarify .q .answer { margin: 0; padding: 6px 10px; background: var(--bg); border-radius: 6px; overflow-wrap: anywhere; }
+.clarify.done { border-color: var(--border); }
+
+.follow h2 { margin: 0 0 4px; font-size: 1.1rem; }
+.follow.attention { border-color: var(--partial); }
+.summary-view { margin-top: 10px; }
+.summary-view summary { cursor: pointer; color: var(--muted); font-size: 0.9rem; }
+.summary-view pre {
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto;
+  background: var(--code); border-radius: 6px; padding: 8px; font: 0.85rem/1.4 ui-monospace, monospace;
+}

@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runCouncil, parseStance, parseVerdict, systemPrompt, openingMessage, transcriptMarkdown } from '../src/council.js';
+import {
+  runCouncil, parseStance, parseVerdict, systemPrompt, openingMessage, transcriptMarkdown,
+  parseQuestion, clarificationsBlock, sessionSummary, CLARIFY_INSTRUCTION,
+} from '../src/council.js';
 import { renderMarkdown } from '../src/markdown.js';
 
 const members = [
@@ -158,4 +161,156 @@ test('every member gets the evidence in its opening message; the chair gets only
 test('transcript lists each attached file once', () => {
   const md = transcriptMarkdown('Q?', [], null, [scan, { ...scan, page: 3 }, textDoc]);
   assert.match(md, /_Evidence attached: scan\.pdf, quote\.pdf_/);
+});
+
+// ---------- clarifying questions ----------
+
+// Round-1 replies carry a QUESTION line for the members named in `asks`; everything else is as fakeComplete.
+function askingComplete(asks = {}) {
+  const calls = [];
+  const complete = async ({ model, messages }) => {
+    calls.push({ model, messages: structuredClone(messages) });
+    if (messages[0].content.startsWith('You are the chair')) return { text: verdictJson, cost: 0 };
+    const round = messages.filter((m) => m.role === 'user').length;
+    const q = round === 1 ? `QUESTION: ${asks[model] ?? 'none'}\n` : '';
+    return { text: `answer r${round}\n${q}STANCE: do X (${model})\nAGREEMENT: ${round === 1 ? 'n/a' : 'partial'}`, cost: 0 };
+  };
+  return { complete, calls };
+}
+
+test('parseQuestion reads the QUESTION line and ignores none', () => {
+  assert.equal(parseQuestion('x\nQUESTION: Which model number do you have?\nSTANCE: y'), 'Which model number do you have?');
+  assert.equal(parseQuestion('**QUESTION:** What is your budget?**'), 'What is your budget?');
+  for (const none of ['QUESTION: none', 'QUESTION: None.', 'QUESTION: n/a', 'question: No questions', 'no marker here'])
+    assert.equal(parseQuestion(none), null, none);
+});
+
+test('the clarify instruction is only added to round 1 when the user can be asked', async () => {
+  assert.equal(openingMessage('Q?', [], true, true), 'Q?' + CLARIFY_INSTRUCTION);
+  assert.match(openingMessage('Q?', [textDoc], true, true), /QUESTION: <your question>/);
+  const off = askingComplete();
+  await runCouncil({ question: 'Q?', members, rounds: 1, judgeModel: 'j', complete: off.complete });
+  assert.equal(off.calls[0].messages[1].content, 'Q?');
+  const on = askingComplete();
+  await runCouncil({ question: 'Q?', members, rounds: 1, judgeModel: 'j', complete: on.complete, askUser: async () => null });
+  assert.match(on.calls[0].messages[1].content, /clarifying question/);
+  const r2 = on.calls.find((c) => c.messages.length === 4);
+  assert.doesNotMatch(r2.messages[3].content, /clarifying question/);
+});
+
+test('pauses after round 1 with only the real questions, then shares Q&A with every member', async () => {
+  const { complete, calls } = askingComplete({ 'a/claude': 'Which model number?', 'c/gemini': 'What is your budget?' });
+  let asked;
+  const events = [];
+  const res = await runCouncil({
+    question: 'Q?', members, rounds: 2, judgeModel: 'j', complete,
+    askUser: async (qs) => { asked = qs; return ['A3065', '']; },
+    onEvent: (e) => events.push(e.type),
+  });
+  assert.deepEqual(asked.map((q) => q.question), ['Which model number?', 'What is your budget?']);
+  assert.deepEqual(asked.map((q) => q.from), ['Claude · Save me money', 'Gemini · Save me stress']);
+  for (const model of ['a/claude', 'b/gpt', 'c/gemini']) {
+    const r2 = calls.find((c) => c.model === model && c.messages.length === 4).messages[3].content;
+    assert.match(r2, /Question \(asked by Claude · Save me money\): Which model number\?\n {2}Answer: A3065/);
+    assert.match(r2, /asked by Gemini · Save me stress\): What is your budget\?\n {2}Answer: \(not answered/);
+    const r3 = calls.find((c) => c.model === model && c.messages.length === 6).messages[5].content;
+    assert.doesNotMatch(r3, /asked by/, 'Q&A is shared once, with round 2');
+  }
+  assert.ok(events.indexOf('clarify-start') < events.indexOf('clarify-done'));
+  assert.equal(res.clarifications.items[0].answer, 'A3065');
+  assert.equal(res.clarifications.skipped, false);
+  assert.match(calls.at(-1).messages[1].content, /## Clarifications from the user[\s\S]*\*\*Answer:\*\* A3065/, 'the chair sees them too');
+});
+
+test('skipping or answering nothing tells the members to proceed on assumptions', async () => {
+  for (const reply of [null, ['', '  ']]) {
+    const { complete, calls } = askingComplete({ 'a/claude': 'Which model?' });
+    const res = await runCouncil({ question: 'Q?', members, rounds: 1, judgeModel: 'j', complete, askUser: async () => reply });
+    const r2 = calls.find((c) => c.model === 'b/gpt' && c.messages.length === 4).messages[3].content;
+    assert.match(r2, /chose not to answer\. Proceed on your best assumptions/);
+    assert.equal(res.clarifications.skipped, true);
+  }
+});
+
+test('no pause when nobody asks, when disabled, or when there is no debate round', async () => {
+  let called = 0;
+  const askUser = async () => { called++; return []; };
+  const quiet = askingComplete();
+  const a = await runCouncil({ question: 'Q?', members, rounds: 1, judgeModel: 'j', complete: quiet.complete, askUser });
+  assert.equal(called, 0);
+  assert.equal(a.clarifications, null);
+  assert.equal(quiet.calls.length, 3 * 2 + 1);
+  const asking = askingComplete({ 'a/claude': 'Q?' });
+  await runCouncil({ question: 'Q?', members, rounds: 1, judgeModel: 'j', complete: asking.complete });
+  const zero = askingComplete({ 'a/claude': 'Q?' });
+  await runCouncil({ question: 'Q?', members, rounds: 0, judgeModel: 'j', complete: zero.complete, askUser });
+  assert.equal(called, 0);
+});
+
+test('stopping while waiting for the user aborts the run', async () => {
+  const { complete } = askingComplete({ 'a/claude': 'Which model?' });
+  const askUser = async () => { throw new DOMException('Aborted', 'AbortError'); };
+  await assert.rejects(runCouncil({ question: 'Q?', members, rounds: 1, judgeModel: 'j', complete, askUser }), { name: 'AbortError' });
+});
+
+test('a member whose call failed cannot ask a question', async () => {
+  const { complete: base } = askingComplete({ 'b/gpt': 'ignored' });
+  const complete = async (req) => (req.model === 'b/gpt' ? Promise.reject(new Error('boom')) : base(req));
+  let asked;
+  await runCouncil({ question: 'Q?', members, rounds: 1, judgeModel: 'j', complete, askUser: async (q) => { asked = q; return null; } });
+  assert.equal(asked, undefined);
+});
+
+test('clarificationsBlock formats answered, unanswered and skipped', () => {
+  assert.equal(clarificationsBlock(null), '');
+  assert.equal(clarificationsBlock({ skipped: false, items: [] }), '');
+  const b = clarificationsBlock({ skipped: false, items: [{ from: 'X', question: 'Q1?', answer: 'yes' }] });
+  assert.match(b, /override assumptions[\s\S]*Question \(asked by X\): Q1\?\n {2}Answer: yes/);
+});
+
+// ---------- follow-up summary ----------
+
+const finished = {
+  question: 'Is it the furnace?',
+  clarifications: { skipped: false, items: [{ from: 'Claude', question: 'Model?', answer: 'A3065' }] },
+  transcript: [
+    [{ label: 'Claude', text: 'LONG OPENING ANSWER one', stance: 'Replace' }, { label: 'GPT', text: 'LONG OPENING ANSWER two', stance: 'Wait' }],
+    [{ label: 'Claude', text: 'LONG LATER ANSWER', stance: 'Replace this fall' }, { label: 'GPT', text: null, error: 'boom' }],
+  ],
+  verdict: { parsed: { consensus: 'partial', summary: 'Close.', recommendation: 'Replace soon', agreements: ['Age matters'], disagreements: ['Timing'] } },
+  attachments: [{ name: 'quote.pdf', kind: 'text' }, { name: 'quote.pdf', kind: 'image', page: 2 }, { name: 'previous-session.md', kind: 'text' }],
+};
+
+test('session summary keeps stances, verdict and Q&A but not the full answers', () => {
+  const s = sessionSummary(finished);
+  assert.match(s, /^# Previous council session\n\n\*\*Question:\*\* Is it the furnace\?/);
+  assert.match(s, /Claude asked: Model\?\n {2}Answer: A3065/);
+  assert.match(s, /\*\*Evidence used:\*\* quote\.pdf\n/);
+  assert.doesNotMatch(s, /previous-session/);
+  assert.match(s, /- Claude: Replace this fall/);
+  assert.match(s, /- GPT: Wait/, 'falls back to the last round in which the member answered');
+  assert.match(s, /partial consensus\. Close\./);
+  assert.match(s, /Recommendation:\*\* Replace soon/);
+  assert.match(s, /Still contested:\*\*\n- Timing/);
+  assert.doesNotMatch(s, /LONG/);
+  assert.ok(s.length < 1200);
+});
+
+test('a follow-up summary nests the earlier one', () => {
+  const first = sessionSummary(finished);
+  const second = sessionSummary({ ...finished, question: 'Timing?', clarifications: null, previous: first });
+  assert.match(second, /^# Previous council session\n\n\*\*Question:\*\* Timing\?/);
+  assert.match(second, /## Before that\n\n\*\*Question:\*\* Is it the furnace\?/);
+  assert.equal(second.match(/# Previous council session/g).length, 1);
+});
+
+test('summary falls back to unstructured verdict text', () => {
+  const s = sessionSummary({ ...finished, verdict: { text: 'The chair rambled', parsed: null } });
+  assert.match(s, /Chair's verdict \(unstructured\):\*\* The chair rambled/);
+});
+
+test('transcript lists clarifications after round 1', () => {
+  const md = transcriptMarkdown('Q?', finished.transcript, null, [], finished.clarifications);
+  assert.match(md, /## Round 1[\s\S]*## Clarifications from the user[\s\S]*\*\*Claude asked:\*\* Model\?[\s\S]*## Round 2/);
+  assert.match(transcriptMarkdown('Q?', finished.transcript, null, [], { skipped: true, items: finished.clarifications.items }), /chose not to answer/);
 });
