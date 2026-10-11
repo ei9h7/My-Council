@@ -118,12 +118,37 @@ export function parseStance(text) {
   return { stance, agreement };
 }
 
+// Used only when two or more members ask: one cheap call turns their questions into one,
+// so the user answers once instead of several overlapping questions.
+export const MERGE_PROMPT =
+  'You are the council secretary. Several advisors each want to ask the user a clarifying question. ' +
+  'Combine them into ONE short question the user can answer in a sentence or two. Merge duplicates, keep ' +
+  'every distinct piece of information that was asked for, and drop nothing that matters. If the questions ' +
+  'cover different things, join them naturally in one sentence or as "(a) … (b) …". ' +
+  'Reply with ONLY a JSON object: {"question": "..."}';
+
+export function parseMerged(text) {
+  const raw = /```(?:json)?\s*([\s\S]*?)```/i.exec(text)?.[1] ?? text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1);
+  try {
+    const q = JSON.parse(raw)?.question;
+    return typeof q === 'string' && q.trim() ? q.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Text of the user's answers to the council's clarifying questions, for the members and the chair. */
 export function clarificationsBlock(c) {
   if (!c?.items?.length) return '';
   if (c.skipped) {
     return 'Some members asked clarifying questions, but the user chose not to answer. ' +
       'Proceed on your best assumptions and state them.';
+  }
+  if (c.merged) {
+    const it = c.items[0];
+    return 'The members\' clarifying questions were combined into one for the user. Treat the answer as fact that ' +
+      `overrides assumptions:\n- Question (from ${c.asked.map((q) => q.from).join(', ')}): ${it.question}\n` +
+      `  Answer: ${it.answer}`;
   }
   const lines = c.items.map(
     (it) => `- Question (asked by ${it.from}): ${it.question}\n  Answer: ${it.answer || '(not answered — assume what you must, and say what you assumed)'}`,
@@ -172,6 +197,8 @@ export function transcriptMarkdown(question, rounds, verdict, attachments = [], 
     if (i === 0 && clarifications?.items?.length) {
       out.push('\n## Clarifications from the user\n');
       if (clarifications.skipped) out.push('\n_The user chose not to answer._\n');
+      if (clarifications.merged)
+        out.push(`\n_Asked by ${clarifications.asked.map((q) => q.from).join(', ')}; combined into one question._\n`);
       for (const it of clarifications.items)
         out.push(`\n**${it.from} asked:** ${it.question}\n\n**Answer:** ${clarifications.skipped ? '_skipped_' : it.answer || '_not answered_'}\n`);
     }
@@ -260,8 +287,11 @@ export function parseVerdict(text) {
  *        resolves with one answer per question (blank = unanswered) or null (skip). Omit to disable.
  * @param {number} opts.rounds        debate rounds after the opening answers
  * @param {boolean} opts.earlyStop    stop once every member reports full agreement
+ * @param {boolean} [opts.mergeQuestions]  when 2+ members ask, the chair merges them into one question (default true)
  * @param {string} opts.judgeModel
- * @param {(req:{model:string, messages:object[], signal?:AbortSignal, onToken?:(t:string)=>void}) => Promise<{text:string, cost?:number}>} opts.complete
+ * @param {string} [opts.effort]  reasoning effort for members (low | medium | high); omit for the model's default
+ * @param {string} [opts.sessionId]  groups each member's calls so the provider keeps its prompt cache warm
+ * @param {(req:{model:string, messages:object[], session?:string, effort?:string, signal?:AbortSignal, onToken?:(t:string)=>void}) => Promise<{text:string, cost?:number, saved?:number}>} opts.complete
  * @param {(event:object) => void} [opts.onEvent]
  * @param {AbortSignal} [opts.signal]
  */
@@ -274,6 +304,9 @@ export async function runCouncil({
   judgeModel,
   complete,
   askUser,
+  mergeQuestions = true,
+  effort,
+  sessionId = Math.random().toString(36).slice(2, 10),
   onEvent = () => {},
   signal,
 }) {
@@ -286,6 +319,11 @@ export async function runCouncil({
   ]);
   const transcript = [];
   let cost = 0;
+  let saved = 0; // what prompt caching saved, as reported by the provider
+  const tally = (res) => {
+    cost += res.cost ?? 0;
+    saved += res.saved ?? 0;
+  };
   const totalRounds = 1 + rounds;
 
   for (let round = 1; round <= totalRounds; round++) {
@@ -310,12 +348,15 @@ export async function runCouncil({
           const res = await complete({
             model: m.model,
             messages: histories[i],
+            // Each member's history only ever grows, so every round re-sends a prefix the provider has cached.
+            session: `${sessionId}-m${i}`,
+            effort,
             signal,
             onToken: (t) => onEvent({ type: 'token', round, index: i, token: t }),
           });
-          cost += res.cost ?? 0;
+          tally(res);
           const entry = { label: labels[i], model: m.model, text: res.text, ...parseStance(res.text), question: parseQuestion(res.text) };
-          onEvent({ type: 'member-done', round, index: i, entry, cost });
+          onEvent({ type: 'member-done', round, index: i, entry, cost, saved });
           return entry;
         } catch (err) {
           if (err?.name === 'AbortError') throw err;
@@ -338,12 +379,39 @@ export async function runCouncil({
     if (round === 1 && clarify) {
       const questions = live.filter((r) => r.question).map((r) => ({ from: r.label, question: r.question }));
       if (questions.length) {
-        onEvent({ type: 'clarify-start', questions });
-        const answers = await askUser(questions, signal);
+        let shown = questions;
+        let merged = false;
+        if (mergeQuestions && questions.length > 1) {
+          onEvent({ type: 'merge-start', questions });
+          try {
+            const res = await complete({
+              model: judgeModel,
+              messages: [
+                { role: 'system', content: MERGE_PROMPT },
+                { role: 'user', content: `The user's question to the council:\n${question}\n\nThe advisors' questions:\n${questions.map((q) => `- ${q.from}: ${q.question}`).join('\n')}` },
+              ],
+              session: `${sessionId}-chair`,
+              signal,
+            });
+            tally(res);
+            const one = parseMerged(res.text);
+            if (one) {
+              shown = [{ from: 'The council', question: one }];
+              merged = true;
+            }
+          } catch (err) {
+            if (err?.name === 'AbortError') throw err;
+            // Fall back to asking each question separately.
+          }
+        }
+        onEvent({ type: 'clarify-start', questions: shown, asked: questions, cost, saved });
+        const answers = await askUser(shown, signal);
         const skipped = !Array.isArray(answers);
         clarifications = {
           skipped,
-          items: questions.map((q, i) => ({ ...q, answer: skipped ? '' : String(answers[i] ?? '').trim() })),
+          merged,
+          ...(merged ? { asked: questions } : {}),
+          items: shown.map((q, i) => ({ ...q, answer: skipped ? '' : String(answers[i] ?? '').trim() })),
         };
         // Answering nothing is the same as skipping.
         if (!skipped && clarifications.items.every((it) => !it.answer)) clarifications.skipped = true;
@@ -367,16 +435,17 @@ export async function runCouncil({
         { role: 'system', content: JUDGE_PROMPT },
         { role: 'user', content: judgeInput },
       ],
+      session: `${sessionId}-chair`,
       signal,
       onToken: (t) => onEvent({ type: 'judge-token', token: t }),
     });
-    cost += res.cost ?? 0;
+    tally(res);
     verdict = { text: res.text, parsed: parseVerdict(res.text) };
   } catch (err) {
     if (err?.name === 'AbortError') throw err;
     verdict = { text: `The chair failed to summarise: ${err?.message ?? err}`, parsed: null };
   }
-  onEvent({ type: 'verdict', verdict, cost });
+  onEvent({ type: 'verdict', verdict, cost, saved });
 
-  return { transcript, verdict, cost, clarifications };
+  return { transcript, verdict, cost, saved, clarifications };
 }

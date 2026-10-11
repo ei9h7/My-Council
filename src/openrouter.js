@@ -15,22 +15,62 @@ export async function listModels() {
       vision: (m.architecture?.input_modalities ?? []).includes('image'),
       prompt: Number(m.pricing?.prompt ?? 0) * 1e6,
       completion: Number(m.pricing?.completion ?? 0) * 1e6,
+      cacheRead: Number(m.pricing?.input_cache_read ?? 0) * 1e6,
+      cacheWrite: Number(m.pricing?.input_cache_write ?? 0) * 1e6,
+      // A listed cache-read price is how OpenRouter says the model supports prompt caching.
+      caching: Number(m.pricing?.input_cache_read ?? 0) > 0,
+      efforts: m.reasoning?.supported_efforts ?? [],
     }))
     .sort((a, b) => b.created - a.created);
 }
 
-/** Returns a `complete` function for runCouncil, bound to an API key. */
-export function makeComplete(apiKey) {
-  return async function complete({ model, messages, signal, onToken }) {
-    const res = await fetch(`${API}/chat/completions`, {
+/** Checks a key and returns its credit status: {label, usage, limit, limit_remaining}. */
+export async function checkKey(apiKey) {
+  const res = await fetch(`${API}/key`, { headers: { Authorization: `Bearer ${apiKey}` } });
+  if (res.status === 401 || res.status === 403) throw new Error('OpenRouter rejected that key.');
+  if (!res.ok) throw new Error(`Couldn't check the key (HTTP ${res.status}).`);
+  return (await res.json()).data ?? {};
+}
+
+/**
+ * Claude needs an explicit opt-in to cache; OpenAI, Gemini, Grok and DeepSeek cache automatically.
+ * Anthropic's automatic mode (one top-level cache_control) moves the breakpoint forward as the
+ * conversation grows, which is exactly the shape of a debate round.
+ */
+export const needsCacheOptIn = (model) => /^~?anthropic\//.test(model);
+
+/** The request body for one call. Exported for tests. */
+export function requestBody({ model, messages, session, effort }) {
+  const body = { model, messages, stream: true, usage: { include: true } };
+  // Keeps every round of one member on the same provider, so its cache is still there next round.
+  if (session) body.session_id = session;
+  if (needsCacheOptIn(model)) body.cache_control = { type: 'ephemeral' };
+  if (effort) body.reasoning = { effort };
+  return body;
+}
+
+/**
+ * Returns a `complete` function for runCouncil.
+ *
+ * @param {object} opts
+ * @param {string} [opts.apiKey]   an OpenRouter key (self-hosted mode)
+ * @param {string} [opts.endpoint] chat completions URL; defaults to OpenRouter's. The hosted build points this at its proxy.
+ * @param {() => Promise<string>} [opts.getToken] bearer token per call, used instead of apiKey (e.g. a Firebase ID token)
+ * @param {(id:string) => {prompt:number, cacheRead:number, cacheWrite:number}|undefined} [opts.pricing]
+ *        per-million prices, used to work out caching savings when the provider doesn't report them
+ */
+export function makeComplete({ apiKey, endpoint = `${API}/chat/completions`, getToken, pricing } = {}) {
+  return async function complete({ model, messages, session, effort, signal, onToken }) {
+    const token = getToken ? await getToken() : apiKey;
+    const res = await fetch(endpoint, {
       method: 'POST',
       signal,
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
         'X-Title': 'My Council',
       },
-      body: JSON.stringify({ model, messages, stream: true, usage: { include: true } }),
+      body: JSON.stringify(requestBody({ model, messages, session, effort })),
     });
     if (!res.ok) {
       let detail = '';
@@ -45,6 +85,8 @@ export function makeComplete(apiKey) {
     let buffer = '';
     let text = '';
     let cost;
+    let usage;
+    let discount;
 
     for (;;) {
       const { value, done } = await reader.read();
@@ -69,10 +111,29 @@ export function makeComplete(apiKey) {
           text += delta;
           onToken?.(delta);
         }
-        if (chunk.usage?.cost != null) cost = chunk.usage.cost;
+        if (chunk.usage) {
+          usage = chunk.usage;
+          if (usage.cost != null) cost = usage.cost;
+        }
+        discount = chunk.cache_discount ?? chunk.usage?.cache_discount ?? discount;
       }
     }
     if (!text.trim()) throw new Error(`${model}: empty response`);
-    return { text, cost };
+    return { text, cost, saved: cacheSavings(usage, discount, pricing?.(model)), usage };
   };
+}
+
+/**
+ * Dollars saved by prompt caching on one call: OpenRouter's own figure when it sends one, otherwise
+ * worked out from the cached/written token counts and the model's prices. Negative when a call
+ * only wrote to the cache (writes cost a little more than a plain read on Claude).
+ */
+export function cacheSavings(usage, discount, price) {
+  if (typeof discount === 'number') return discount;
+  const d = usage?.prompt_tokens_details;
+  if (!d || !price) return 0;
+  const read = d.cached_tokens ?? 0;
+  const write = d.cache_write_tokens ?? 0;
+  const cw = price.cacheWrite || price.prompt;
+  return (read * (price.prompt - price.cacheRead) - write * (cw - price.prompt)) / 1e6;
 }

@@ -4,77 +4,106 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>My Council</title>
+  <meta name="description" content="Three AIs debate your question, then tell you whether they agree." />
+  <script>
+    // Apply the saved theme before first paint so there is no flash.
+    try {
+      const t = JSON.parse(localStorage.getItem('my-council:v2'))?.theme;
+      if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+    } catch {}
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="src/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234355b9'/%3E%3Ccircle cx='10' cy='13' r='3.2' fill='white'/%3E%3Ccircle cx='22' cy='13' r='3.2' fill='white'/%3E%3Ccircle cx='16' cy='21' r='3.2' fill='white'/%3E%3C/svg%3E" />
 </head>
 <body>
-  <header>
-    <h1>My Council</h1>
-    <p class="tagline">Three AIs debate your question, then report whether they agree.</p>
+  <header class="appbar">
+    <div class="appbar-inner">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" /><circle cx="10" cy="13" r="3.2" /><circle cx="22" cy="13" r="3.2" /><circle cx="16" cy="21" r="3.2" /></svg>
+        <span>My Council</span>
+      </div>
+      <div class="appbar-actions">
+        <span id="account" class="account" hidden></span>
+        <button id="themeBtn" type="button" class="icon-btn" aria-label="Switch light or dark mode" title="Light / dark">
+          <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zm0-5 1.5 3h-3L12 2zm0 20-1.5-3h3L12 22zM2 12l3-1.5v3L2 12zm20 0-3 1.5v-3L22 12zM4.9 4.9l3.2 1-2.1 2.1-1.1-3.1zm14.2 14.2-3.2-1 2.1-2.1 1.1 3.1zM4.9 19.1l1-3.2 2.1 2.1-3.1 1.1zM19.1 4.9l-1 3.2-2.1-2.1 3.1-1.1z"/></svg>
+          <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 15.3A8.5 8.5 0 0 1 8.7 4a8.5 8.5 0 1 0 11.3 11.3z"/></svg>
+        </button>
+        <button id="settingsBtn" type="button" class="icon-btn" aria-label="Settings" title="Settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3h-4l-.4 2.9a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.6 7.6 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1c.5.4 1.1.7 1.7 1L11 21h4l.4-2.9c.6-.3 1.2-.6 1.7-1l2.5 1 2-3.5-2.2-1.6zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg>
+        </button>
+      </div>
+    </div>
   </header>
 
   <main>
-    <details id="settings" class="panel">
-      <summary>Settings</summary>
-      <label>OpenRouter API key
-        <input id="apiKey" type="password" autocomplete="off" placeholder="sk-or-…" />
-      </label>
-      <p class="hint">Stored only in this browser (localStorage) and sent only to openrouter.ai.
-        Get one at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>.</p>
-      <div class="row">
-        <label>Debate rounds after opening answers
-          <input id="rounds" type="number" min="0" max="5" value="3" />
-        </label>
-        <label class="check"><input id="earlyStop" type="checkbox" checked /> Stop early when all three fully agree</label>
+    <section id="welcome" class="card welcome" hidden>
+      <div>
+        <h2>Welcome to My Council</h2>
+        <p>Ask a question and three AIs answer it, debate each other, and tell you where they agree. To start, connect an OpenRouter account — one account covers Claude, ChatGPT, Gemini and more.</p>
       </div>
-      <label class="check"><input id="clarify" type="checkbox" checked /> Let members ask me a clarifying question after round 1</label>
-      <label>Chair model (writes the final summary)
-        <input id="judgeModel" list="modelList" />
-      </label>
-      <p id="estimate" class="hint"></p>
-    </details>
+      <button id="welcomeBtn" type="button" class="btn filled">Connect OpenRouter</button>
+    </section>
 
-    <section class="panel">
-      <div class="presets">
-        <span>Presets:</span>
-        <button type="button" data-preset="assistants">Claude / ChatGPT / Gemini</button>
-        <button type="button" data-preset="personas">Money / Time / Stress</button>
-        <button type="button" data-preset="mixed">Both mixed</button>
-        <button type="button" data-preset="budget">Budget</button>
+    <section id="askPanel" class="card ask">
+      <label for="question" class="title">What should the council decide?</label>
+      <textarea id="question" rows="4" placeholder="e.g. Should I replace my 12-year-old furnace now or wait until it fails?"></textarea>
+      <div class="attach">
+        <label for="files" class="btn tonal small">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 6.5v10a4.5 4.5 0 0 1-9 0V5a3 3 0 0 1 6 0v10.5a1.5 1.5 0 0 1-3 0V6.5H9v9a3 3 0 0 0 6 0V5a4.5 4.5 0 0 0-9 0v11.5a6 6 0 0 0 12 0v-10h-1.5z"/></svg>
+          Attach files
+        </label>
+        <input id="files" type="file" multiple hidden />
+        <span class="hint">Optional — quotes, reports, photos, PDFs. Or drop them here.</span>
+      </div>
+      <ul id="attachList" class="attach-list"></ul>
+      <p id="attachWarn" class="hint warn"></p>
+      <div class="ask-footer">
+        <p id="estimate" class="hint"></p>
+        <div class="actions">
+          <button id="stop" type="button" class="btn outlined" hidden>Stop</button>
+          <button id="go" type="button" class="btn filled">Convene the council</button>
+        </div>
+      </div>
+      <div class="run-line">
+        <p id="status" class="hint" role="status"></p>
+        <span id="cost" class="hint"></span>
+        <button id="export" type="button" class="btn text small" hidden>Download transcript</button>
+      </div>
+    </section>
+
+    <section class="card council">
+      <div class="council-head">
+        <h2>Your council</h2>
+        <div id="modes" class="segmented" role="radiogroup" aria-label="Council style"></div>
+      </div>
+      <p id="modeHint" class="hint"></p>
+      <div id="sharedRow" class="shared-row" hidden>
+        <label class="field">AI model for all three members
+          <select id="sharedModel" class="model"></select>
+        </label>
+        <input id="sharedOther" class="other-model" list="modelList" placeholder="Any OpenRouter model ID, e.g. mistralai/mistral-large" hidden />
       </div>
       <div id="seats" class="seats"></div>
     </section>
 
-    <section id="askPanel" class="panel">
-      <label for="question">Your question</label>
-      <textarea id="question" rows="4" placeholder="e.g. Should I replace my 12-year-old furnace now or wait until it fails?"></textarea>
-      <div class="attach">
-        <label for="files" class="button">Attach evidence</label>
-        <input id="files" type="file" multiple hidden />
-        <span class="hint">Optional. PDF, Word, images or text files — or drop them here. Read in your browser, then sent to the models with your question.</span>
-      </div>
-      <ul id="attachList" class="attach-list"></ul>
-      <p id="attachWarn" class="hint warn"></p>
-      <div class="row actions">
-        <button id="go" type="button" class="primary">Convene the council</button>
-        <button id="stop" type="button" hidden>Stop</button>
-        <button id="export" type="button" hidden>Download transcript</button>
-        <span id="cost" class="hint"></span>
-      </div>
-      <p id="status" class="hint" role="status"></p>
-    </section>
-
     <div id="sessions"></div>
 
-    <section id="followPanel" class="panel follow" hidden>
+    <section id="followPanel" class="card follow" hidden>
       <h2>Follow up</h2>
-      <p class="hint">Something still unresolved, or something to add? A short summary of this session is attached automatically (final positions and verdict, not the full transcript), so the follow-up stays cheap.</p>
-      <label for="followNote">What should they know, or why are you following up?</label>
+      <p class="hint">Still unresolved, or something to add? A short summary of this session goes along automatically (final positions and verdict, not the whole transcript), so follow-ups stay cheap.</p>
+      <label for="followNote" class="field-label">What should they know, or why are you following up?</label>
       <textarea id="followNote" rows="3" placeholder="e.g. Gemini is wrong about the model — see the screenshot. Focus on whether to book service now."></textarea>
       <div class="attach">
-        <label for="followFiles" class="button">Attach evidence</label>
+        <label for="followFiles" class="btn tonal small">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 6.5v10a4.5 4.5 0 0 1-9 0V5a3 3 0 0 1 6 0v10.5a1.5 1.5 0 0 1-3 0V6.5H9v9a3 3 0 0 0 6 0V5a4.5 4.5 0 0 0-9 0v11.5a6 6 0 0 0 12 0v-10h-1.5z"/></svg>
+          Attach files
+        </label>
         <input id="followFiles" type="file" multiple hidden />
-        <button id="reattach" type="button" hidden>Re-attach previous files</button>
-        <span class="hint">Optional. Files from the last session aren't carried over unless you re-attach them.</span>
+        <button id="reattach" type="button" class="btn text small" hidden>Re-attach previous files</button>
+        <span class="hint">Files from the last session aren't carried over unless you re-attach them.</span>
       </div>
       <ul id="followAttachList" class="attach-list"></ul>
       <p id="followAttachWarn" class="hint warn"></p>
@@ -82,21 +111,111 @@
         <summary>Session summary that will be sent</summary>
         <pre id="summaryText"></pre>
       </details>
-      <div class="row actions">
-        <button id="followGo" type="button" class="primary">Convene follow-up</button>
-        <span id="followEstimate" class="hint"></span>
+      <div class="ask-footer">
+        <p id="followEstimate" class="hint"></p>
+        <div class="actions"><button id="followGo" type="button" class="btn filled">Convene follow-up</button></div>
       </div>
       <p id="followStatus" class="hint" role="status"></p>
     </section>
   </main>
 
+  <dialog id="settings" class="sheet" aria-labelledby="settingsTitle">
+    <form method="dialog">
+      <header class="sheet-head">
+        <h2 id="settingsTitle">Settings</h2>
+        <button type="submit" class="icon-btn" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7l-1.4-1.4L9.2 12 2.9 5.7l1.4-1.4 6.3 6.3 6.3-6.3z" transform="translate(1 0)"/></svg>
+        </button>
+      </header>
+
+      <section id="connectSection" class="group">
+        <h3>OpenRouter connection</h3>
+        <label class="field">API key
+          <div class="key-row">
+            <input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-…" />
+            <button id="checkKey" type="button" class="btn tonal small">Check</button>
+          </div>
+        </label>
+        <p id="keyStatus" class="hint"></p>
+        <details class="howto">
+          <summary>How do I get a key?</summary>
+          <ol>
+            <li>Create a free account at <a href="https://openrouter.ai" target="_blank" rel="noopener">openrouter.ai</a>.</li>
+            <li>Add a few dollars of credit under <a href="https://openrouter.ai/settings/credits" target="_blank" rel="noopener">Credits</a>. A typical question costs a few cents.</li>
+            <li>Create a key under <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">Keys</a> (setting a credit limit on it is a good idea), and paste it above.</li>
+          </ol>
+          <p class="hint">The key is stored only in this browser and is sent only to openrouter.ai.</p>
+        </details>
+      </section>
+
+      <section class="group">
+        <h3>Debate</h3>
+        <label class="field inline">Debate rounds after the opening answers
+          <select id="rounds">
+            <option value="0">0 — opening answers only</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3 (recommended)</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+          </select>
+        </label>
+        <label class="switch"><input id="earlyStop" type="checkbox" /><span class="track"></span>
+          <span>Stop early once all three fully agree</span></label>
+        <label class="switch"><input id="clarify" type="checkbox" /><span class="track"></span>
+          <span>Let the council ask me a clarifying question after the opening answers</span></label>
+        <label class="switch"><input id="mergeQuestions" type="checkbox" /><span class="track"></span>
+          <span>Combine their questions into one, so I answer once</span></label>
+      </section>
+
+      <section class="group">
+        <h3>Chair</h3>
+        <label class="field">Chair model — merges questions and writes the final verdict
+          <select id="chair"></select>
+        </label>
+        <p class="hint">The chair only summarises a finished debate, so a fast, cheap model without extended thinking does the job. It isn't one of the debaters.</p>
+      </section>
+
+      <section class="group">
+        <h3>Appearance</h3>
+        <div id="themes" class="segmented" role="radiogroup" aria-label="Theme"></div>
+      </section>
+
+      <details class="group advanced">
+        <summary><h3>Advanced</h3></summary>
+        <label class="field inline">Member thinking depth
+          <select id="effort">
+            <option value="">Model default</option>
+            <option value="low">Low — cheapest, fastest</option>
+            <option value="medium">Medium</option>
+            <option value="high">High — most thorough</option>
+          </select>
+        </label>
+        <p class="hint">Reasoning models bill their thinking as output, which is usually the biggest part of the cost. Lower depth cuts it.</p>
+        <label class="switch"><input id="anyModel" type="checkbox" /><span class="track"></span>
+          <span>Allow any OpenRouter model (adds “Other model…” to the model lists)</span></label>
+        <label class="switch"><input id="cachingOnly" type="checkbox" /><span class="track"></span>
+          <span>Only suggest models with prompt caching</span></label>
+      </details>
+
+      <footer class="sheet-foot"><button type="submit" class="btn filled">Done</button></footer>
+    </form>
+  </dialog>
+
   <datalist id="modelList"></datalist>
 
   <template id="seatTpl">
     <div class="seat">
-      <h3></h3>
-      <label>Model <input class="model" list="modelList" /></label>
-      <label>Persona <select class="persona"></select></label>
+      <div class="seat-head">
+        <span class="avatar"></span>
+        <div>
+          <div class="seat-name"></div>
+          <div class="seat-sub"></div>
+        </div>
+      </div>
+      <label class="field model-field">AI model <select class="model"></select></label>
+      <input class="other-model" list="modelList" placeholder="Any OpenRouter model ID" hidden />
+      <label class="field persona-field">Priority <select class="persona"></select></label>
       <textarea class="customPersona" rows="2" placeholder="Describe this member's priorities…" hidden></textarea>
     </div>
   </template>

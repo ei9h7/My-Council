@@ -1,126 +1,277 @@
 import { PERSONAS, runCouncil, transcriptMarkdown, sessionSummary } from './council.js';
-import { listModels, makeComplete } from './openrouter.js';
+import { listModels, makeComplete, checkKey, needsCacheOptIn } from './openrouter.js';
 import { renderMarkdown } from './markdown.js';
 import { ACCEPT, readAttachment } from './attachments.js';
+import {
+  BRANDS, CATALOG, CHAIRS, DEFAULT_CHAIR, DEFAULT_MODELS, DEFAULT_PERSONAS, MODES, brandOf, displayModel,
+} from './catalog.js';
 
 const $ = (id) => document.getElementById(id);
-const STORE = 'my-council:v1';
+const STORE = 'my-council:v2';
+const OTHER = '__other';
 
-const MODELS = {
-  claude: 'anthropic/claude-sonnet-5.5',
-  chatgpt: 'openai/gpt-6.1-sol',
-  gemini: 'google/gemini-3.1-pro-preview',
-  claudeCheap: 'anthropic/claude-haiku-5.5',
-  chatgptCheap: 'openai/gpt-6-luna',
-  geminiCheap: 'google/gemini-3.8-flash',
-};
-
-const PRESETS = {
-  assistants: [
-    { name: 'Claude', model: MODELS.claude, persona: 'balanced' },
-    { name: 'ChatGPT', model: MODELS.chatgpt, persona: 'balanced' },
-    { name: 'Gemini', model: MODELS.gemini, persona: 'balanced' },
-  ],
-  personas: [
-    { name: 'Claude', model: MODELS.claude, persona: 'money' },
-    { name: 'Claude', model: MODELS.claude, persona: 'time' },
-    { name: 'Claude', model: MODELS.claude, persona: 'stress' },
-  ],
-  mixed: [
-    { name: 'Claude', model: MODELS.claude, persona: 'money' },
-    { name: 'ChatGPT', model: MODELS.chatgpt, persona: 'time' },
-    { name: 'Gemini', model: MODELS.gemini, persona: 'stress' },
-  ],
-  budget: [
-    { name: 'Claude', model: MODELS.claudeCheap, persona: 'money' },
-    { name: 'ChatGPT', model: MODELS.chatgptCheap, persona: 'time' },
-    { name: 'Gemini', model: MODELS.geminiCheap, persona: 'stress' },
-  ],
-};
-
-let models = [];
+let models = []; // OpenRouter's live list (prices, vision, caching)
 let controller = null;
 let running = false;
 let sessions = []; // finished sessions in the current chain: [{title, userQuestion, attachments, transcript, verdict, clarifications, summary}]
 let earlierEvidence = []; // ready evidence entries used anywhere in this chain, for "re-attach"
 
-// ---------- persistence ----------
+// The hosted build replaces this with a proxy endpoint and a login; see README "Hosted mode".
+export const backend = { hosted: false, complete: null };
+
+// ---------- settings ----------
+
+const DEFAULTS = {
+  apiKey: '',
+  rounds: 3,
+  earlyStop: true,
+  clarify: true,
+  mergeQuestions: true,
+  chair: DEFAULT_CHAIR,
+  effort: '',
+  anyModel: false,
+  cachingOnly: true,
+  theme: 'system',
+  council: {
+    mode: 'mixed',
+    models: [...DEFAULT_MODELS],
+    shared: DEFAULT_MODELS[0],
+    personas: [...DEFAULT_PERSONAS],
+    custom: ['', '', ''],
+  },
+};
 
 function load() {
+  let s = {};
   try {
-    return JSON.parse(localStorage.getItem(STORE)) ?? {};
-  } catch {
-    return {};
-  }
+    s = JSON.parse(localStorage.getItem(STORE)) ?? {};
+    if (!localStorage.getItem(STORE)) {
+      // Carry over the key and debate settings from the first version.
+      const v1 = JSON.parse(localStorage.getItem('my-council:v1')) ?? {};
+      s = { apiKey: v1.apiKey, rounds: v1.rounds, earlyStop: v1.earlyStop, clarify: v1.clarify };
+    }
+  } catch {}
+  const out = { ...DEFAULTS, ...Object.fromEntries(Object.entries(s).filter(([, v]) => v != null)) };
+  out.council = { ...DEFAULTS.council, ...(s.council ?? {}) };
+  out.rounds = Math.min(5, Math.max(0, Number(out.rounds) || 0));
+  if (!CHAIRS.some((c) => c.id === out.chair)) out.chair = DEFAULT_CHAIR;
+  return out;
 }
+
+const settings = load();
+
 function save() {
   try {
-    localStorage.setItem(
-      STORE,
-      JSON.stringify({
-        apiKey: $('apiKey').value.trim(),
-        rounds: $('rounds').value,
-        earlyStop: $('earlyStop').checked,
-        clarify: $('clarify').checked,
-        judgeModel: $('judgeModel').value.trim(),
-        members: readSeats(),
-      }),
-    );
+    localStorage.setItem(STORE, JSON.stringify(settings));
   } catch {}
 }
 
-// ---------- seats ----------
+// ---------- theme ----------
 
-function nameFor(model) {
-  const vendor = model.split('/')[0];
-  return { anthropic: 'Claude', openai: 'ChatGPT', google: 'Gemini', 'x-ai': 'Grok' }[vendor] ??
-    models.find((m) => m.id === model)?.name.split(':')[0] ?? vendor;
+function applyTheme() {
+  const t = settings.theme;
+  if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+  renderSegmented($('themes'), { system: 'System', light: 'Light', dark: 'Dark' }, t, (v) => {
+    settings.theme = v;
+    save();
+    applyTheme();
+  });
 }
+
+function isDark() {
+  const t = settings.theme;
+  return t === 'dark' || (t === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+}
+
+// ---------- shared widgets ----------
+
+function renderSegmented(el, options, value, onPick) {
+  el.innerHTML = '';
+  for (const [key, label] of Object.entries(options)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('role', 'radio');
+    b.setAttribute('aria-checked', String(key === value));
+    b.textContent = label;
+    b.addEventListener('click', () => onPick(key));
+    el.append(b);
+  }
+}
+
+const price = (id) => models.find((m) => m.id === id);
+
+/** $–$$$$ from a blended price per million tokens (answers are output-heavy). */
+function costTier(id) {
+  const p = price(id);
+  if (!p) return '';
+  const blended = p.prompt * 0.3 + p.completion * 0.7;
+  return blended < 1.5 ? '$' : blended < 10 ? '$$' : blended < 25 ? '$$$' : '$$$$';
+}
+
+function fillModelSelect(select, value) {
+  select.innerHTML = '';
+  for (const [key, brand] of Object.entries(BRANDS)) {
+    const group = document.createElement('optgroup');
+    group.label = brand.name;
+    for (const m of CATALOG.filter((c) => c.brand === key)) {
+      const bits = [m.label, costTier(m.id), m.tag !== 'Recommended' && m.tag].filter(Boolean);
+      group.append(new Option(bits.join('  ·  '), m.id));
+    }
+    select.append(group);
+  }
+  if (settings.anyModel) select.append(new Option('Other OpenRouter model…', OTHER));
+  const known = CATALOG.some((c) => c.id === value);
+  select.value = known ? value : settings.anyModel ? OTHER : '';
+  return known;
+}
+
+function fillDatalist() {
+  const dl = $('modelList');
+  dl.innerHTML = '';
+  for (const m of models) {
+    if (settings.cachingOnly && !m.caching) continue;
+    const cost = m.prompt || m.completion ? ` — $${m.prompt.toFixed(2)}/$${m.completion.toFixed(2)} per M` : '';
+    dl.append(new Option(`${m.name}${cost}${m.caching ? ' · caching' : ''}`, m.id));
+  }
+}
+
+// ---------- council (seats) ----------
+
+const seatEls = [];
 
 function buildSeats() {
   const tpl = $('seatTpl');
   for (let i = 0; i < 3; i++) {
     const seat = tpl.content.firstElementChild.cloneNode(true);
-    seat.querySelector('h3').textContent = `Member ${i + 1}`;
-    const sel = seat.querySelector('.persona');
-    for (const [key, p] of Object.entries(PERSONAS)) sel.add(new Option(p.label, key));
+    const persona = seat.querySelector('.persona');
+    for (const [key, p] of Object.entries(PERSONAS)) persona.add(new Option(p.label, key));
+    const model = seat.querySelector('.model');
+    const other = seat.querySelector('.other-model');
     const custom = seat.querySelector('.customPersona');
-    sel.addEventListener('change', () => {
-      custom.hidden = sel.value !== 'custom';
-      refreshEstimates();
+
+    model.addEventListener('change', () => {
+      if (model.value === OTHER) {
+        other.hidden = false;
+        other.focus();
+        settings.council.models[i] = other.value.trim();
+      } else {
+        settings.council.models[i] = model.value;
+      }
+      councilChanged();
+    });
+    other.addEventListener('change', () => {
+      settings.council.models[i] = other.value.trim();
+      councilChanged();
+    });
+    persona.addEventListener('change', () => {
+      settings.council.personas[i] = persona.value;
+      councilChanged();
+    });
+    custom.addEventListener('change', () => {
+      settings.council.custom[i] = custom.value;
       save();
     });
-    seat.querySelector('.model').addEventListener('change', () => {
-      refreshEstimates();
-      save();
-    });
-    custom.addEventListener('change', save);
+    seatEls.push(seat);
     $('seats').append(seat);
   }
-}
-
-function readSeats() {
-  return [...$('seats').children].map((seat) => {
-    const model = seat.querySelector('.model').value.trim();
-    return {
-      name: nameFor(model),
-      model,
-      vision: models.find((x) => x.id === model)?.vision,
-      persona: seat.querySelector('.persona').value,
-      customPersona: seat.querySelector('.customPersona').value,
-    };
+  $('sharedModel').addEventListener('change', () => {
+    const sel = $('sharedModel');
+    if (sel.value === OTHER) {
+      $('sharedOther').hidden = false;
+      $('sharedOther').focus();
+      settings.council.shared = $('sharedOther').value.trim();
+    } else settings.council.shared = sel.value;
+    councilChanged();
+  });
+  $('sharedOther').addEventListener('change', () => {
+    settings.council.shared = $('sharedOther').value.trim();
+    councilChanged();
   });
 }
 
-function writeSeats(members) {
-  [...$('seats').children].forEach((seat, i) => {
+function councilChanged() {
+  save();
+  renderCouncil();
+  refreshEstimates();
+}
+
+function renderCouncil() {
+  const c = settings.council;
+  renderSegmented($('modes'), Object.fromEntries(Object.entries(MODES).map(([k, v]) => [k, v.label])), c.mode, (mode) => {
+    c.mode = mode;
+    councilChanged();
+  });
+  for (const b of $('modes').children) b.disabled = running;
+  $('modeHint').textContent = MODES[c.mode].hint;
+
+  const shared = c.mode === 'priorities';
+  $('sharedRow').hidden = !shared;
+  if (shared) {
+    const known = fillModelSelect($('sharedModel'), c.shared);
+    $('sharedOther').hidden = known || !settings.anyModel;
+    $('sharedOther').value = known ? '' : c.shared;
+    if (!known && !settings.anyModel) c.shared = DEFAULT_MODELS[0];
+  }
+
+  const members = readSeats();
+  seatEls.forEach((seat, i) => {
     const m = members[i];
-    if (!m) return;
-    seat.querySelector('.model').value = m.model;
-    seat.querySelector('.persona').value = m.persona in PERSONAS ? m.persona : 'balanced';
-    seat.querySelector('.customPersona').value = m.customPersona ?? '';
-    seat.querySelector('.customPersona').hidden = m.persona !== 'custom';
+    const modelSel = seat.querySelector('.model');
+    const other = seat.querySelector('.other-model');
+    seat.querySelector('.model-field').hidden = shared;
+    if (!shared) {
+      const known = fillModelSelect(modelSel, c.models[i]);
+      other.hidden = known || !settings.anyModel;
+      other.value = known ? '' : c.models[i];
+      if (!known && !settings.anyModel) {
+        c.models[i] = DEFAULT_MODELS[i];
+        modelSel.value = c.models[i];
+      }
+    } else other.hidden = true;
+
+    const showPersona = c.mode !== 'ais';
+    seat.querySelector('.persona-field').hidden = !showPersona;
+    seat.querySelector('.persona').value = c.personas[i] in PERSONAS ? c.personas[i] : 'balanced';
+    const custom = seat.querySelector('.customPersona');
+    custom.hidden = !showPersona || c.personas[i] !== 'custom';
+    custom.value = c.custom[i] ?? '';
+
+    const brand = brandOf(m.model);
+    const avatar = seat.querySelector('.avatar');
+    avatar.dataset.brand = brand ?? 'other';
+    avatar.textContent = BRANDS[brand]?.initial ?? (m.model.replace(/^~/, '')[0] ?? '?').toUpperCase();
+    seat.querySelector('.seat-name').textContent = shared ? `Member ${i + 1}` : m.name;
+    seat.querySelector('.seat-sub').textContent = showPersona
+      ? (m.persona === 'custom' ? 'Custom priority' : PERSONAS[m.persona]?.label ?? '')
+      : m.model ? displayModel(m.model) : 'Pick a model';
+    for (const el of seat.querySelectorAll('select, input, textarea')) el.disabled = running;
   });
+  $('sharedModel').disabled = running;
+  $('sharedOther').disabled = running;
+}
+
+function nameFor(model) {
+  const brand = brandOf(model);
+  return BRANDS[brand]?.name ?? price(model)?.name.split(':').pop().trim() ?? model.split('/').pop() ?? 'Member';
+}
+
+/** The three members as the engine wants them, derived from the council style. */
+function readSeats() {
+  const c = settings.council;
+  const seats = [0, 1, 2].map((i) => {
+    const model = (c.mode === 'priorities' ? c.shared : c.models[i]) || '';
+    const persona = c.mode === 'ais' ? 'balanced' : c.personas[i] || 'balanced';
+    return { name: nameFor(model), model, vision: price(model)?.vision, persona, customPersona: c.custom[i] ?? '' };
+  });
+  // Two seats with the same model and persona would get the same label; number them.
+  const seen = {};
+  for (const s of seats) {
+    const key = `${s.name}|${s.persona}|${s.persona === 'custom' ? s.customPersona : ''}`;
+    seen[key] = (seen[key] ?? 0) + 1;
+    if (seen[key] > 1) s.name = `${s.name} ${seen[key]}`;
+  }
+  return seats;
 }
 
 // ---------- evidence boxes (the question box and the follow-up box each have one) ----------
@@ -192,7 +343,7 @@ function createEvidenceBox({ list, warn, input, label, onChange }) {
       const images = box.ready().some((e) => e.images);
       const blind = images ? readSeats().filter((m) => m.vision === false) : [];
       warn.textContent = blind.length
-        ? `Can't see images: ${blind.map((m) => m.model).join(', ')}. ${blind.length === 1 ? 'That member' : 'Those members'} will be told images exist but won't see them — pick an image-capable model to fix.`
+        ? `Can't see images: ${blind.map((m) => displayModel(m.model)).join(', ')}. ${blind.length === 1 ? 'That member' : 'Those members'} will be told images exist but won't see them — pick an image-capable model to fix.`
         : '';
     },
   };
@@ -238,29 +389,60 @@ function wireDrop(panel, box) {
 
 // ---------- cost estimate ----------
 
-function estimateText(ready, extraChars, noun) {
-  const rounds = Number($('rounds').value) || 0;
+const money = (x) => `$${x.toFixed(x < 0.1 ? 3 : 2)}`;
+
+/**
+ * Rough per-run cost with and without prompt caching. Assumes ~500 visible output tokens per answer
+ * (plus ~1,000 thinking tokens on reasoning models) and that each round re-sends the history.
+ * With caching, everything up to the previous round is a cache read.
+ */
+function estimateCost(ready, extraChars) {
+  const rounds = settings.rounds;
   const members = readSeats();
-  const calls = members.length * (1 + rounds) + 1;
-  let text = `Up to ${calls} model calls per ${noun}.`;
-  // Rough: ~500 output tokens per answer; each later round re-sends the history plus the others' answers.
-  const price = (id) => models.find((m) => m.id === id);
-  let est = 0;
-  let known = true;
   const textTokens = (ready.reduce((s, e) => s + e.chars, 0) + extraChars) / 4;
   const imageCount = ready.reduce((s, e) => s + e.images, 0);
+  let cached = 0;
+  let plain = 0;
+  let known = true;
   for (const m of members) {
     const p = price(m.model);
-    if (!p) { known = false; continue; }
-    // Evidence sits in the opening message, so it is re-sent with every round.
-    const evidenceTokens = textTokens + (p.vision ? imageCount * 1500 : 0);
-    for (let r = 0; r <= rounds; r++) est += ((300 + evidenceTokens + r * 1600) * p.prompt + 500 * p.completion) / 1e6;
+    if (!p) {
+      known = false;
+      continue;
+    }
+    const evidence = textTokens + (p.vision ? imageCount * 1500 : 0);
+    const out = 500 + (p.efforts.length ? 1000 : 0);
+    const write = needsCacheOptIn(m.model) ? p.cacheWrite || p.prompt : p.prompt;
+    let prev = 0;
+    for (let r = 0; r <= rounds; r++) {
+      const input = 300 + evidence + r * 1600; // each round adds the others' two answers plus this member's reply
+      const outputCost = (out * p.completion) / 1e6;
+      plain += (input * p.prompt) / 1e6 + outputCost;
+      cached += p.caching ? (prev * p.cacheRead + (input - prev) * write) / 1e6 + outputCost : (input * p.prompt) / 1e6 + outputCost;
+      prev = input;
+    }
   }
-  const j = price($('judgeModel').value.trim());
-  if (j) est += (members.length * (1 + rounds) * 500 * j.prompt + 600 * j.completion) / 1e6;
-  else known = false;
-  if (models.length && est > 0) text += ` Rough cost: ~$${est.toFixed(est < 0.1 ? 3 : 2)}${known ? '' : ' (some models unpriced)'}.`;
-  if (ready.length || extraChars) text += ` Includes ${textTokens < 1000 ? '<1k' : `~${Math.round(textTokens / 1000)}k`} tokens of evidence${imageCount ? ` and ${imageCount} image${imageCount > 1 ? 's' : ''}` : ''}, re-sent each round.`;
+  const j = price(settings.chair);
+  if (j) {
+    const chair = (members.length * (1 + rounds) * 500 * j.prompt + 700 * j.completion) / 1e6;
+    plain += chair;
+    cached += chair;
+  } else known = false;
+  return { cached, plain, known, textTokens, imageCount, calls: members.length * (1 + rounds) + 1 };
+}
+
+function estimateText(ready, extraChars, noun) {
+  const e = estimateCost(ready, extraChars);
+  let text = `Up to ${e.calls} model calls per ${noun}.`;
+  if (models.length && e.cached > 0) {
+    text += ` Rough cost ~${money(e.cached)}`;
+    const pct = Math.round((1 - e.cached / e.plain) * 100);
+    if (pct >= 3) text += ` (prompt caching saves ~${pct}%)`;
+    text += e.known ? '.' : ' — some models unpriced.';
+  }
+  if (ready.length || extraChars) {
+    text += ` Includes ${e.textTokens < 1000 ? '<1k' : `~${Math.round(e.textTokens / 1000)}k`} tokens of evidence${e.imageCount ? ` and ${e.imageCount} image${e.imageCount > 1 ? 's' : ''}` : ''}.`;
+  }
   return text;
 }
 
@@ -273,44 +455,78 @@ function refreshEstimates() {
   }
 }
 
+function costText(cost, saved, final) {
+  if (!cost) return '';
+  let t = `${final ? 'Total' : 'Spent so far'}: $${cost.toFixed(4)}`;
+  if (saved > 0.00005) t += ` · caching saved $${saved.toFixed(4)}`;
+  return t;
+}
+
 // ---------- rendering ----------
 
 function roundSection(parent, round) {
   const sec = document.createElement('div');
   sec.className = 'round';
-  sec.innerHTML = `<h2>Round ${round}${round === 1 ? ' — opening answers' : ' — responding to each other'}</h2><div class="round-grid"></div>`;
+  sec.innerHTML = `<div class="round-head"><h3>Round ${round}</h3><span>${round === 1 ? 'Opening answers, written independently' : 'Responding to each other'}</span></div><div class="round-grid"></div>`;
   parent.append(sec);
   return sec.querySelector('.round-grid');
 }
 
-function card(label, model) {
+function answerCard(label, model) {
   const el = document.createElement('article');
-  el.className = 'card thinking';
-  el.innerHTML = '<header><div class="who"></div><div class="model"></div></header><div class="body"></div>';
+  el.className = 'answer thinking';
+  el.innerHTML = '<header><span class="avatar small"></span><div><div class="who"></div><div class="model"></div></div></header><div class="body"></div>';
+  const brand = brandOf(model);
+  const av = el.querySelector('.avatar');
+  av.dataset.brand = brand ?? 'other';
+  av.textContent = BRANDS[brand]?.initial ?? '?';
   el.querySelector('.who').textContent = label;
-  el.querySelector('.model').textContent = model;
+  el.querySelector('.model').textContent = displayModel(model);
   return el;
 }
 
-function badge(level) {
-  return level ? `<span class="badge ${level}">${level}</span>` : '';
+// Long answers collapse once finished so a round fits on screen.
+function collapsible(cardEl) {
+  const body = cardEl.querySelector('.body');
+  if (body.scrollHeight < 300) return;
+  cardEl.classList.add('collapsed');
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn text small more';
+  btn.textContent = 'Show more';
+  btn.addEventListener('click', () => {
+    const open = cardEl.classList.toggle('collapsed');
+    btn.textContent = open ? 'Show more' : 'Show less';
+  });
+  cardEl.append(btn);
 }
+
+// The protocol lines (STANCE / AGREEMENT / QUESTION) are for the engine; the card shows the stance as a footer instead.
+const PROTOCOL_LINE = /^\s*\**(STANCE|AGREEMENT|QUESTION)\**\s*:.*$/gim;
+const stripProtocol = (text) => text.replace(PROTOCOL_LINE, '').trim();
+
+const AGREE = { full: 'Agrees', partial: 'Partly agrees', none: 'Disagrees' };
+const chip = (level, text) => (level ? `<span class="chip ${level}">${text ?? level}</span>` : '');
+const inlineMd = (s) => renderMarkdown(String(s)).replace(/^<p>|<\/p>$/g, '');
 
 function showVerdict(box, verdict) {
   box.hidden = false;
   const v = verdict.parsed;
+  box.className = `card verdict ${v?.consensus ?? ''}`;
   if (!v) {
-    box.innerHTML = `<h2>Chair's summary</h2><div class="body">${renderMarkdown(verdict.text)}</div>`;
+    box.innerHTML = `<div class="verdict-head"><span class="eyebrow">The chair's verdict</span><h2>Summary</h2></div><div class="body">${renderMarkdown(verdict.text)}</div>`;
     return;
   }
   const label = { full: 'Consensus reached', partial: 'Partial consensus', none: 'No consensus' }[v.consensus];
-  const list = (items) => `<ul>${items.map((i) => `<li>${renderMarkdown(String(i)).replace(/^<p>|<\/p>$/g, '')}</li>`).join('')}</ul>`;
+  const list = (items) => `<ul>${items.map((i) => `<li>${inlineMd(i)}</li>`).join('')}</ul>`;
   box.innerHTML = `
-    <h2>${label} ${badge(v.consensus)}</h2>
-    ${v.recommendation ? `<div class="rec"><strong>Recommendation:</strong> ${renderMarkdown(v.recommendation).replace(/^<p>|<\/p>$/g, '')}</div>` : ''}
+    <div class="verdict-head"><span class="eyebrow">The chair's verdict</span><h2>${label}</h2>${chip(v.consensus, { full: 'Full', partial: 'Partial', none: 'None' }[v.consensus])}</div>
+    ${v.recommendation ? `<div class="rec"><strong>Recommendation</strong>${inlineMd(v.recommendation)}</div>` : ''}
     <div class="body">${renderMarkdown(v.summary ?? '')}</div>
-    ${v.agreements?.length ? `<h3>Agreed</h3>${list(v.agreements)}` : ''}
-    ${v.disagreements?.length ? `<h3>Still contested</h3>${list(v.disagreements)}` : ''}
+    <div class="cols">
+      ${v.agreements?.length ? `<div><h3>Agreed</h3>${list(v.agreements)}</div>` : ''}
+      ${v.disagreements?.length ? `<div><h3>Still contested</h3>${list(v.disagreements)}</div>` : ''}
+    </div>
     ${v.positions?.length ? `<h3>Final positions</h3>${list(v.positions.map((p) => `**${p.member}:** ${p.final_stance}`))}` : ''}`;
 }
 
@@ -320,17 +536,18 @@ function setRunning(r) {
   $('followGo').disabled = r;
   $('reattach').disabled = r;
   $('followNote').disabled = r;
-  for (const el of document.querySelectorAll('#seats input, #seats select, #seats textarea, .presets button')) el.disabled = r;
+  $('question').disabled = r;
   mainBox.setDisabled(r);
   followBox.setDisabled(r);
+  renderCouncil();
 }
 
 function newSession(title, withBar) {
   const el = document.createElement('div');
   el.className = 'session';
   el.innerHTML = `${title ? '<h2 class="session-title"></h2>' : ''}
-    <div class="session-bar"${withBar ? '' : ' hidden'}><span class="status hint"></span><span class="cost hint"></span><button type="button" class="stop">Stop</button></div>
-    <section class="panel verdict" hidden></section><div class="rounds"></div>`;
+    <div class="session-bar"${withBar ? '' : ' hidden'}><span class="status hint"></span><span class="cost hint"></span><button type="button" class="btn outlined small stop">Stop</button></div>
+    <section class="card verdict" hidden></section><div class="rounds"></div>`;
   if (title) el.querySelector('.session-title').textContent = title;
   el.querySelector('.stop').addEventListener('click', () => controller?.abort());
   $('sessions').append(el);
@@ -364,19 +581,19 @@ function hideFollowUp() {
 // ---------- run ----------
 
 function readConfig(statusEl) {
-  const apiKey = $('apiKey').value.trim();
   const members = readSeats();
-  if (!apiKey) {
-    $('settings').open = true;
-    $('apiKey').focus();
-    statusEl.textContent = 'Add your OpenRouter API key first.';
+  if (!backend.hosted && !settings.apiKey) {
+    openSettings(true);
+    statusEl.textContent = 'Connect your OpenRouter account first.';
     return null;
   }
   if (members.some((m) => !m.model)) {
     statusEl.textContent = 'Every member needs a model.';
     return null;
   }
-  return { apiKey, members, judgeModel: $('judgeModel').value.trim() || members[0].model };
+  const complete =
+    backend.complete ?? makeComplete({ apiKey: settings.apiKey, pricing: (id) => price(id) });
+  return { members, judgeModel: settings.chair || DEFAULT_CHAIR, complete };
 }
 
 async function convene() {
@@ -385,7 +602,6 @@ async function convene() {
   if (!config) return;
   if (!question) return void $('question').focus();
   if (mainBox.reading()) return void ($('status').textContent = 'Still reading your attachments — try again in a moment.');
-  save();
 
   sessions = [];
   earlierEvidence = [];
@@ -411,9 +627,9 @@ async function conveneFollowUp() {
   const previous = sessions.at(-1);
   if (!previous) return;
   const note = $('followNote').value.trim();
-  save();
   $('followStatus').textContent = '';
-  hideFollowUpWhileRunning();
+  // The panel stays out of the way while a follow-up streams in, but its draft is kept in case the run fails.
+  $('followPanel').hidden = true;
   await runSession({
     config,
     kind: 'follow',
@@ -430,13 +646,8 @@ async function conveneFollowUp() {
   });
 }
 
-// The panel stays out of the way while a follow-up streams in, but its draft is kept in case the run fails.
-function hideFollowUpWhileRunning() {
-  $('followPanel').hidden = true;
-}
-
 async function runSession({ config, kind, title, userQuestion, engineQuestion, attachments, evidence, previous }) {
-  const { apiKey, members, judgeModel } = config;
+  const { members, judgeModel, complete } = config;
   const el = newSession(title, kind === 'follow');
   const ui =
     kind === 'new'
@@ -454,40 +665,62 @@ async function runSession({ config, kind, title, userQuestion, engineQuestion, a
   let cards = [];
   let buffers = [];
   let judgeChars = 0;
+  let askedBy = []; // the members' original questions, when the chair merged them
 
-  // Pauses the run until the user answers (or skips) the members' questions.
+  // Pauses the run until the user answers (or skips) the council's question(s).
   const askUser = (questions, signal) =>
     new Promise((resolve, reject) => {
+      const merged = askedBy.length > 1 && questions.length === 1;
       const panel = document.createElement('section');
-      panel.className = 'panel clarify';
+      panel.className = 'card clarify';
       panel.innerHTML = `<h2></h2>
-        <p class="hint">Answer what you can; blank is fine. Every member sees all the questions and answers before the next round.</p>
+        <p class="hint"></p>
         <div class="qs"></div>
-        <div class="row actions"><button type="button" class="primary send">Send answers</button><button type="button" class="skip">Skip — let them debate</button></div>`;
+        <div class="ask-footer"><div class="actions"><button type="button" class="btn text skip">Skip — let them debate</button><button type="button" class="btn filled send">Send answer</button></div></div>`;
       panel.querySelector('h2').textContent = questions.length === 1 ? 'The council has a question for you' : 'The council has questions for you';
+      panel.querySelector('.hint').textContent = questions.length === 1
+        ? 'Every member sees your answer before the next round. Blank is fine.'
+        : 'Answer what you can; blank is fine. Every member sees all the questions and answers before the next round.';
+      if (questions.length > 1) panel.querySelector('.send').textContent = 'Send answers';
       const areas = questions.map((q) => {
         const div = document.createElement('div');
         div.className = 'q';
         div.innerHTML = '<div class="asker"></div><div class="text"></div><textarea rows="2" placeholder="Your answer…"></textarea>';
-        div.querySelector('.asker').textContent = q.from;
+        div.querySelector('.asker').textContent = merged ? `Combined from ${askedBy.length} members' questions` : q.from;
         div.querySelector('.text').textContent = q.question;
+        if (merged) {
+          const det = document.createElement('details');
+          det.className = 'origin';
+          det.innerHTML = '<summary>What each member asked</summary><ul></ul>';
+          for (const a of askedBy) {
+            const li = document.createElement('li');
+            li.textContent = `${a.from}: ${a.question}`;
+            det.querySelector('ul').append(li);
+          }
+          div.querySelector('.text').after(det);
+        }
         panel.querySelector('.qs').append(div);
         return div.querySelector('textarea');
       });
       roundsEl.append(panel);
       panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
       areas[0].focus({ preventScroll: true });
+      for (const a of areas) {
+        a.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) panel.querySelector('.send').click();
+        });
+      }
 
       const freeze = (answers) => {
         panel.classList.add('done');
-        panel.querySelector('h2').textContent = answers ? 'Your answers to the council' : 'You skipped the council’s questions';
+        panel.querySelector('h2').textContent = answers ? 'Your answer to the council' : 'You skipped the council’s questions';
         panel.querySelector('.hint').textContent = answers ? '' : 'The members will proceed on their own assumptions.';
-        panel.querySelector('.actions').remove();
+        panel.querySelector('.ask-footer').remove();
         panel.querySelectorAll('.q').forEach((div, i) => {
           div.querySelector('textarea').replaceWith(
-            Object.assign(document.createElement('p'), { className: 'answer', textContent: answers?.[i] || '(no answer)' }),
+            Object.assign(document.createElement('p'), { className: 'answered', textContent: answers?.[i] || '(no answer)' }),
           );
-          if (!answers) div.querySelector('.answer').remove();
+          if (!answers) div.querySelector('.answered').remove();
         });
       };
       const onAbort = () => {
@@ -513,7 +746,7 @@ async function runSession({ config, kind, title, userQuestion, engineQuestion, a
         buffers = [];
         break;
       case 'member-start':
-        cards[e.index] = card(e.label, members[e.index].model);
+        cards[e.index] = answerCard(e.label, members[e.index].model);
         buffers[e.index] = '';
         grid.append(cards[e.index]);
         break;
@@ -524,9 +757,16 @@ async function runSession({ config, kind, title, userQuestion, engineQuestion, a
       case 'member-done': {
         const c = cards[e.index];
         c.classList.remove('thinking');
-        c.querySelector('.body').innerHTML = renderMarkdown(e.entry.text);
-        if (e.round > 1 && e.entry.agreement) c.querySelector('header').insertAdjacentHTML('beforeend', badge(e.entry.agreement));
-        if (e.cost) ui.cost.textContent = `Spent so far: $${e.cost.toFixed(4)}`;
+        c.querySelector('.body').innerHTML = renderMarkdown(stripProtocol(e.entry.text));
+        if (e.entry.stance) {
+          const st = document.createElement('div');
+          st.className = 'stance';
+          st.innerHTML = `<strong>Stance</strong>${inlineMd(e.entry.stance.replace(/\*+$/, ''))}`;
+          c.append(st);
+        }
+        if (e.round > 1 && e.entry.agreement) c.querySelector('header').insertAdjacentHTML('beforeend', chip(e.entry.agreement, AGREE[e.entry.agreement]));
+        collapsible(c);
+        ui.cost.textContent = costText(e.cost, e.saved);
         break;
       }
       case 'member-error': {
@@ -536,22 +776,26 @@ async function runSession({ config, kind, title, userQuestion, engineQuestion, a
         c.querySelector('.body').textContent = e.entry.error;
         break;
       }
+      case 'merge-start':
+        ui.status.textContent = 'The chair is combining the members’ questions…';
+        break;
       case 'clarify-start':
-        ui.status.textContent = 'Waiting for your answers…';
+        askedBy = e.asked ?? [];
+        ui.status.textContent = 'Waiting for your answer…';
         break;
       case 'early-stop':
         ui.status.textContent = `All three fully agreed after round ${e.round} — skipping the remaining rounds.`;
         break;
       case 'judge-start':
-        ui.status.textContent = 'The chair is summarising the debate…';
+        ui.status.textContent = 'The chair is writing the verdict…';
         break;
       case 'judge-token':
         judgeChars += e.token.length;
-        ui.status.textContent = `The chair is summarising the debate… (${judgeChars} chars)`;
+        ui.status.textContent = `The chair is writing the verdict… (${judgeChars} chars)`;
         break;
       case 'verdict':
         showVerdict(verdictEl, e.verdict);
-        if (e.cost) ui.cost.textContent = `Total cost: $${e.cost.toFixed(4)}`;
+        ui.cost.textContent = costText(e.cost, e.saved, true);
         break;
     }
   };
@@ -561,11 +805,13 @@ async function runSession({ config, kind, title, userQuestion, engineQuestion, a
       question: engineQuestion,
       members,
       attachments,
-      rounds: Number($('rounds').value) || 0,
-      earlyStop: $('earlyStop').checked,
+      rounds: settings.rounds,
+      earlyStop: settings.earlyStop,
       judgeModel,
-      complete: makeComplete(apiKey),
-      askUser: $('clarify').checked ? askUser : undefined,
+      complete,
+      askUser: settings.clarify ? askUser : undefined,
+      mergeQuestions: settings.mergeQuestions,
+      effort: settings.effort || undefined,
       onEvent,
       signal: controller.signal,
     });
@@ -585,7 +831,7 @@ async function runSession({ config, kind, title, userQuestion, engineQuestion, a
     showFollowUp(result.verdict, true);
   } catch (err) {
     ui.status.textContent = err?.name === 'AbortError' ? 'Stopped.' : `Error: ${err?.message ?? err}`;
-    for (const c of el.querySelectorAll('.card.thinking')) c.classList.remove('thinking');
+    for (const c of el.querySelectorAll('.answer.thinking')) c.classList.remove('thinking');
     // A failed follow-up leaves the panel open again with the draft intact.
     if (sessions.length) showFollowUp(sessions.at(-1).verdict, false);
   } finally {
@@ -611,59 +857,146 @@ function exportTranscript() {
   URL.revokeObjectURL(a.href);
 }
 
+// ---------- settings dialog ----------
+
+function openSettings(focusKey = false) {
+  const d = $('settings');
+  if (!d.open) d.showModal();
+  if (focusKey && !backend.hosted) $('apiKey').focus();
+}
+
+function syncSettingsForm() {
+  $('apiKey').value = settings.apiKey;
+  $('rounds').value = String(settings.rounds);
+  $('earlyStop').checked = settings.earlyStop;
+  $('clarify').checked = settings.clarify;
+  $('mergeQuestions').checked = settings.mergeQuestions;
+  $('mergeQuestions').disabled = !settings.clarify;
+  $('effort').value = settings.effort;
+  $('anyModel').checked = settings.anyModel;
+  $('cachingOnly').checked = settings.cachingOnly;
+  $('cachingOnly').disabled = !settings.anyModel;
+  const chair = $('chair');
+  chair.innerHTML = '';
+  for (const c of CHAIRS) chair.add(new Option(`${c.label} — ${c.tag}`, c.id));
+  chair.value = settings.chair;
+}
+
+async function verifyKey() {
+  const key = settings.apiKey;
+  const out = $('keyStatus');
+  out.className = 'hint';
+  if (!key) {
+    out.textContent = '';
+    return;
+  }
+  out.textContent = 'Checking…';
+  try {
+    const k = await checkKey(key);
+    if (settings.apiKey !== key) return;
+    out.className = 'hint ok';
+    out.textContent = k.limit_remaining != null
+      ? `Connected · $${Number(k.limit_remaining).toFixed(2)} left on this key`
+      : `Connected · $${Number(k.usage ?? 0).toFixed(2)} used so far`;
+  } catch (err) {
+    if (settings.apiKey !== key) return;
+    out.className = 'hint bad';
+    out.textContent = err.message;
+  }
+}
+
+function wireSettings() {
+  $('settingsBtn').addEventListener('click', () => openSettings());
+  $('welcomeBtn').addEventListener('click', () => openSettings(true));
+  $('themeBtn').addEventListener('click', () => {
+    settings.theme = isDark() ? 'light' : 'dark';
+    save();
+    applyTheme();
+  });
+  $('settings').addEventListener('click', (e) => {
+    if (e.target === $('settings')) $('settings').close(); // click on the backdrop
+  });
+  $('settings').addEventListener('close', () => {
+    updateWelcome();
+    refreshEstimates();
+  });
+  $('apiKey').addEventListener('change', () => {
+    settings.apiKey = $('apiKey').value.trim();
+    save();
+    updateWelcome();
+    verifyKey();
+  });
+  $('checkKey').addEventListener('click', verifyKey);
+  $('rounds').addEventListener('change', () => {
+    settings.rounds = Number($('rounds').value);
+    save();
+  });
+  for (const id of ['earlyStop', 'clarify', 'mergeQuestions', 'anyModel', 'cachingOnly']) {
+    $(id).addEventListener('change', () => {
+      settings[id] = $(id).checked;
+      save();
+      syncSettingsForm();
+      if (id === 'anyModel' || id === 'cachingOnly') {
+        fillDatalist();
+        renderCouncil();
+      }
+    });
+  }
+  $('effort').addEventListener('change', () => {
+    settings.effort = $('effort').value;
+    save();
+  });
+  $('chair').addEventListener('change', () => {
+    settings.chair = $('chair').value;
+    save();
+  });
+}
+
+function updateWelcome() {
+  $('welcome').hidden = backend.hosted || Boolean(settings.apiKey);
+}
+
 // ---------- init ----------
 
-buildSeats();
-const saved = load();
-$('apiKey').value = saved.apiKey ?? '';
-$('rounds').value = saved.rounds ?? 3;
-$('earlyStop').checked = saved.earlyStop ?? true;
-$('clarify').checked = saved.clarify ?? true;
-$('judgeModel').value = saved.judgeModel ?? MODELS.claude;
-writeSeats(saved.members?.length === 3 ? saved.members : PRESETS.mixed);
-if (!saved.apiKey) $('settings').open = true;
+export function start() {
+  buildSeats();
+  applyTheme();
+  syncSettingsForm();
+  wireSettings();
+  renderCouncil();
+  updateWelcome();
+  if (backend.hosted) $('connectSection').hidden = true;
+  else if (settings.apiKey) verifyKey();
 
-for (const btn of document.querySelectorAll('[data-preset]')) {
-  btn.addEventListener('click', () => {
-    writeSeats(PRESETS[btn.dataset.preset]);
-    refreshEstimates();
-    save();
+  wireDrop($('askPanel'), mainBox);
+  wireDrop($('followPanel'), followBox);
+  $('reattach').addEventListener('click', () => {
+    followBox.addEntries(earlierEvidence.filter((e) => !followBox.has(e.name)));
+    $('reattach').hidden = true;
   });
-}
-for (const id of ['apiKey', 'rounds', 'earlyStop', 'clarify', 'judgeModel']) {
-  $(id).addEventListener('change', () => {
-    refreshEstimates();
-    save();
+  $('go').addEventListener('click', convene);
+  $('followGo').addEventListener('click', conveneFollowUp);
+  $('stop').addEventListener('click', () => controller?.abort());
+  $('export').addEventListener('click', exportTranscript);
+  $('question').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) convene();
   });
-}
-wireDrop($('askPanel'), mainBox);
-wireDrop($('followPanel'), followBox);
-$('reattach').addEventListener('click', () => {
-  followBox.addEntries(earlierEvidence.filter((e) => !followBox.has(e.name)));
-  $('reattach').hidden = true;
-});
-$('go').addEventListener('click', convene);
-$('followGo').addEventListener('click', conveneFollowUp);
-$('stop').addEventListener('click', () => controller?.abort());
-$('export').addEventListener('click', exportTranscript);
-$('question').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) convene();
-});
-$('followNote').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) conveneFollowUp();
-});
+  $('followNote').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) conveneFollowUp();
+  });
 
-refreshEstimates();
-listModels()
-  .then((list) => {
-    models = list;
-    const dl = $('modelList');
-    for (const m of list) {
-      const price = m.prompt || m.completion ? ` — $${m.prompt.toFixed(2)}/$${m.completion.toFixed(2)} per M tokens` : '';
-      dl.append(new Option(`${m.name}${price}`, m.id));
-    }
-    refreshEstimates();
-  })
-  .catch(() => {
-    $('estimate').textContent += ' (Could not load the model list — you can still type model IDs.)';
-  });
+  refreshEstimates();
+  listModels()
+    .then((list) => {
+      models = list;
+      fillDatalist();
+      renderCouncil();
+      refreshEstimates();
+    })
+    .catch(() => {
+      $('estimate').textContent += ' (Could not load prices from OpenRouter.)';
+    });
+}
+
+// The hosted build sets window.MY_COUNCIL_DEFER and calls start() itself after login.
+if (!window.MY_COUNCIL_DEFER) start();
