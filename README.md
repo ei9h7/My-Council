@@ -51,7 +51,7 @@ You can attach files that every member should consider: quotes, reports, photos,
 
 ## Your council
 
-Pick a style, then a model per seat from a short list:
+The landing page is just the question box. The chip under it shows who's on the council; click it (or the gear icon) to change the council in Settings. Pick a style, then a model per seat from a short list:
 
 | Style | Seats |
 |---|---|
@@ -80,7 +80,7 @@ Opening `index.html` straight from disk won't work, because ES modules need to b
 
 Open Settings (gear icon) → OpenRouter connection and paste a key; **Check** shows the credit left on it. The key is saved in this browser's localStorage and is sent only to `openrouter.ai`. Anyone with access to the browser profile can read it, so on a shared machine set a credit limit on the key at [openrouter.ai/keys](https://openrouter.ai/keys).
 
-Settings also holds the debate rounds (default 3), early stop, clarifying questions, the chair model, theme, and Advanced options.
+Settings also holds the council (style, models, priorities), the debate rounds (default 3), early stop, clarifying questions, the chair model, theme, and Advanced options.
 
 ## Files
 
