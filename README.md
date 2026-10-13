@@ -2,17 +2,29 @@
 
 Ask one question. Three AIs answer it on their own, then read each other's answers and respond over several rounds. A chair model then reports whether they reached consensus, with a recommendation if they did.
 
-Everything runs in your browser through [OpenRouter](https://openrouter.ai), so one API key covers Claude, ChatGPT, Gemini, Grok, DeepSeek and the rest. There is no server and no build step.
+Everything runs in your browser through [OpenRouter](https://openrouter.ai), so one API key covers Claude, ChatGPT, Gemini, Grok, DeepSeek and the rest. There is no server and no build step. Light and dark themes; works on a phone.
 
 ## How a session runs
 
 1. **Opening round.** Each member answers independently, at the same time.
-2. **Clarifying questions** (on by default). Each member may ask you one question, but only if your answer would change its recommendation and the question and attachments don't already settle it. If anyone asks, the run pauses and shows the questions. Answer what you can (blank is fine) or skip. Every member then sees all the questions and answers together with the others' opening answers. If nobody asks, there is no pause. Turn this off in Settings.
+2. **Clarifying question** (on by default). Each member may ask you one question, but only if your answer would change its recommendation and the question and attachments don't already settle it. When two or more ask, the chair combines them into **one** question so you answer once (turn off in Settings to see them separately). Answer (blank is fine) or skip. Every member then sees the question and your answer together with the others' opening answers. If nobody asks, there is no pause.
 3. **Debate rounds** (3 by default, 0–5 allowed). Each member gets the other two members' latest answers as a follow-up in its own conversation, then responds. Every reply ends with a `STANCE:` line and an `AGREEMENT: full | partial | none` line.
 4. **Early stop** (on by default). If all three report `full` agreement before the last round, the remaining rounds are skipped to save money.
 5. **Verdict.** A chair model reads the whole transcript (including your answers) and returns: consensus (full / partial / none), a summary, the recommendation (only if there is consensus), the points they agreed on, the points still contested, and each member's final position.
 
-With 3 debate rounds that comes to up to 13 model calls per question. The settings panel shows a rough cost estimate, and the app shows the actual spend reported by OpenRouter.
+With 3 debate rounds that comes to up to 13 model calls per question (plus one tiny call when questions are merged). The question box shows a rough cost estimate, and the app shows the actual spend and what caching saved, as reported by OpenRouter.
+
+## Cost: prompt caching and the chair
+
+**Prompt caching is automatic.** Each member keeps one conversation that only grows, so every round re-sends the previous rounds unchanged. The provider caches that prefix and bills it at a fraction of the normal input price (Claude 0.1×, OpenAI/Grok/Gemini 0.25×, DeepSeek 0.1×).
+
+- Claude needs an opt-in, which the app sends (`cache_control`). OpenAI, Gemini, Grok and DeepSeek cache on their own.
+- All of one member's calls share a `session_id`, so OpenRouter routes them to the provider that holds the cache.
+- Every model in the built-in list supports caching. "Allow any OpenRouter model" in Settings → Advanced opens up the full list; "Only suggest models with prompt caching" keeps that list to models that cache.
+- What to expect: caching cuts the *input* side, which grows each round. It doesn't touch output, and reasoning models' thinking is billed as output, so a typical run saves roughly 10–30% overall, more with large attachments. Lowering **Member thinking depth** (Settings → Advanced) is the other big lever.
+- Caches expire after about 5 minutes idle (Claude) or a few minutes (Gemini), so a long pause on a clarifying question can cost one cache re-write.
+
+**The chair** reads the finished debate once and writes a structured verdict (and merges questions). That's summarising, not hard reasoning, so it defaults to **Claude Haiku 5.5** without extended thinking, about 1/20th the price of Sonnet 5.5. Change it in Settings → Chair. Since the chair makes one call per session, caching barely matters for it; the members are where caching pays off.
 
 ## Following up
 
@@ -37,23 +49,19 @@ You can attach files that every member should consider: quotes, reports, photos,
 - **Images and models that can't see them:** a member whose model doesn't accept images is told the images exist but doesn't see them. The app warns you about this before you start.
 - **Cost:** the evidence is part of the conversation, so it is re-sent every round. A 30-page PDF is roughly 15–20k tokens × 3 members × 4 rounds. The estimate in Settings includes it. Each file is cut off at about 120k characters.
 
-## Members: model × persona
+## Your council
 
-Each of the three seats has two separate settings:
+Pick a style, then a model per seat from a short list:
 
-- **Model:** any OpenRouter model ID. The dropdown loads OpenRouter's live model list with prices.
-- **Persona:** Balanced, Save me money, Save me time, Save me stress, Devil's advocate, or Custom (write your own priorities).
-
-Presets:
-
-| Preset | Seats |
+| Style | Seats |
 |---|---|
-| Claude / ChatGPT / Gemini | three different models, all Balanced |
-| Money / Time / Stress | one model playing three personas |
-| Both mixed (default) | Claude = money, ChatGPT = time, Gemini = stress |
-| Budget | the mixed setup on cheap, fast models (Haiku / GPT Luna / Gemini Flash) |
+| Different AIs | three different models, all Balanced |
+| Different priorities | **one** model for all three seats, playing Save me money / time / stress (or Devil's advocate, Balanced, Custom) |
+| Both (default) | a different model *and* a different priority per seat |
 
-You can't tell whether a disagreement comes from the model or from the persona when both change at once. To compare models, use the first preset. To compare priorities, use the second.
+"Different priorities" uses one model on purpose: if the model changes too, you can't tell whether a disagreement comes from the model or the persona.
+
+The model lists (`src/catalog.js`) offer each family's "· latest" alias (OpenRouter keeps it pointed at the newest Sonnet, GPT Sol, Gemini Pro, …) plus a couple of fixed earlier versions, and a fast & cheap option. `$`–`$$$$` shows relative price.
 
 ## Run it
 
@@ -70,13 +78,17 @@ Opening `index.html` straight from disk won't work, because ES modules need to b
 
 ## Your API key
 
-Paste an OpenRouter key into Settings. It is saved in this browser's localStorage and is sent only to `openrouter.ai`. Anyone with access to the browser profile can read it, so on a shared machine set a credit limit on the key at [openrouter.ai/keys](https://openrouter.ai/keys).
+Open Settings (gear icon) → OpenRouter connection and paste a key; **Check** shows the credit left on it. The key is saved in this browser's localStorage and is sent only to `openrouter.ai`. Anyone with access to the browser profile can read it, so on a shared machine set a credit limit on the key at [openrouter.ai/keys](https://openrouter.ai/keys).
+
+Settings also holds the debate rounds (default 3), early stop, clarifying questions, the chair model, theme, and Advanced options.
 
 ## Files
 
 - `src/council.js`: the debate engine (rounds, clarifying questions, follow-up prompts, stance parsing, early stop, verdict, session summaries). It has no DOM and makes no network calls itself.
-- `src/openrouter.js`: streaming chat completions and the model list.
+- `src/openrouter.js`: streaming chat completions (caching opt-in, sticky sessions, savings), key check, the model list.
+- `src/catalog.js`: the curated models, chair options and council styles.
 - `src/app.js`, `index.html`, `src/styles.css`: the UI.
 - `src/markdown.js`: a small Markdown renderer that escapes all HTML first.
 - `src/attachments.js`: reads attached files into evidence (PDF, Word, images, text).
 - `test/`: `node --test` suite using a fake model.
+- `FEATUREREQUESTS.md`: ideas for triage.

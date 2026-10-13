@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   runCouncil, parseStance, parseVerdict, systemPrompt, openingMessage, transcriptMarkdown,
-  parseQuestion, clarificationsBlock, sessionSummary, CLARIFY_INSTRUCTION,
+  parseQuestion, clarificationsBlock, sessionSummary, CLARIFY_INSTRUCTION, parseMerged,
 } from '../src/council.js';
+import { requestBody, cacheSavings, needsCacheOptIn } from '../src/openrouter.js';
 import { renderMarkdown } from '../src/markdown.js';
 
 const members = [
@@ -166,11 +167,15 @@ test('transcript lists each attached file once', () => {
 // ---------- clarifying questions ----------
 
 // Round-1 replies carry a QUESTION line for the members named in `asks`; everything else is as fakeComplete.
-function askingComplete(asks = {}) {
+function askingComplete(asks = {}, merged = null) {
   const calls = [];
-  const complete = async ({ model, messages }) => {
-    calls.push({ model, messages: structuredClone(messages) });
+  const complete = async ({ model, messages, session }) => {
+    calls.push({ model, session, messages: structuredClone(messages) });
     if (messages[0].content.startsWith('You are the chair')) return { text: verdictJson, cost: 0 };
+    if (messages[0].content.startsWith('You are the council secretary')) {
+      if (merged instanceof Error) throw merged;
+      return { text: JSON.stringify({ question: merged }), cost: 0.0001 };
+    }
     const round = messages.filter((m) => m.role === 'user').length;
     const q = round === 1 ? `QUESTION: ${asks[model] ?? 'none'}\n` : '';
     return { text: `answer r${round}\n${q}STANCE: do X (${model})\nAGREEMENT: ${round === 1 ? 'n/a' : 'partial'}`, cost: 0 };
@@ -203,7 +208,7 @@ test('pauses after round 1 with only the real questions, then shares Q&A with ev
   let asked;
   const events = [];
   const res = await runCouncil({
-    question: 'Q?', members, rounds: 2, judgeModel: 'j', complete,
+    question: 'Q?', members, rounds: 2, judgeModel: 'j', complete, mergeQuestions: false,
     askUser: async (qs) => { asked = qs; return ['A3065', '']; },
     onEvent: (e) => events.push(e.type),
   });
@@ -313,4 +318,98 @@ test('transcript lists clarifications after round 1', () => {
   const md = transcriptMarkdown('Q?', finished.transcript, null, [], finished.clarifications);
   assert.match(md, /## Round 1[\s\S]*## Clarifications from the user[\s\S]*\*\*Claude asked:\*\* Model\?[\s\S]*## Round 2/);
   assert.match(transcriptMarkdown('Q?', finished.transcript, null, [], { skipped: true, items: finished.clarifications.items }), /chose not to answer/);
+});
+
+// ---------- one combined clarifying question ----------
+
+test('two or more questions are merged by the chair into one, answered once', async () => {
+  const { complete, calls } = askingComplete(
+    { 'a/claude': 'Which model number?', 'c/gemini': 'What is your budget?' },
+    'What is the furnace model number, and what is your budget?',
+  );
+  let asked;
+  const res = await runCouncil({
+    question: 'Q?', members, rounds: 1, judgeModel: 'j', complete,
+    askUser: async (qs) => { asked = qs; return ['A3065, about $5k']; },
+  });
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].question, 'What is the furnace model number, and what is your budget?');
+  const merge = calls.find((c) => c.messages[0].content.startsWith('You are the council secretary'));
+  assert.equal(merge.model, 'j', 'the chair model does the merge');
+  assert.match(merge.messages[1].content, /Claude · Save me money: Which model number\?[\s\S]*Gemini · Save me stress: What is your budget\?/);
+  assert.equal(res.clarifications.merged, true);
+  assert.equal(res.clarifications.asked.length, 2);
+  const r2 = calls.find((c) => c.model === 'b/gpt' && c.messages.length === 4).messages[3].content;
+  assert.match(r2, /combined into one[\s\S]*from Claude · Save me money, Gemini · Save me stress\): What is the furnace model number[\s\S]*Answer: A3065, about \$5k/);
+  assert.match(sessionSummary({ question: 'Q?', ...res }), /The council asked: What is the furnace/);
+  assert.match(transcriptMarkdown('Q?', res.transcript, null, [], res.clarifications), /combined into one question/);
+});
+
+test('a single question is not merged, and a failed merge falls back to separate questions', async () => {
+  const one = askingComplete({ 'a/claude': 'Which model?' }, 'unused');
+  let asked;
+  await runCouncil({ question: 'Q?', members, rounds: 1, judgeModel: 'j', complete: one.complete, askUser: async (q) => { asked = q; return null; } });
+  assert.equal(asked[0].from, 'Claude · Save me money');
+  assert.ok(!one.calls.some((c) => c.messages[0].content.startsWith('You are the council secretary')));
+
+  const broken = askingComplete({ 'a/claude': 'Which model?', 'b/gpt': 'Budget?' }, new Error('chair down'));
+  const res = await runCouncil({ question: 'Q?', members, rounds: 1, judgeModel: 'j', complete: broken.complete, askUser: async (q) => { asked = q; return ['x', 'y']; } });
+  assert.equal(asked.length, 2);
+  assert.equal(res.clarifications.merged, false);
+});
+
+test('parseMerged reads bare or fenced JSON', () => {
+  assert.equal(parseMerged('{"question":"  A and B?  "}'), 'A and B?');
+  assert.equal(parseMerged('```json\n{"question":"X?"}\n```'), 'X?');
+  assert.equal(parseMerged('nope'), null);
+  assert.equal(parseMerged('{"question":""}'), null);
+});
+
+// ---------- prompt caching ----------
+
+test('each member keeps one sticky session across rounds; the chair has its own', async () => {
+  const calls = [];
+  const complete = async (req) => {
+    calls.push(req);
+    if (req.messages[0].content.startsWith('You are the chair')) return { text: verdictJson, cost: 0.01, saved: 0 };
+    return { text: 'x\nSTANCE: s\nAGREEMENT: partial', cost: 0.002, saved: 0.0005 };
+  };
+  const res = await runCouncil({ question: 'Q?', members, rounds: 2, judgeModel: 'j', complete, sessionId: 'abc', effort: 'low' });
+  const sessionsFor = (model) => new Set(calls.filter((c) => c.model === model).map((c) => c.session));
+  assert.deepEqual([...sessionsFor('a/claude')], ['abc-m0']);
+  assert.deepEqual([...sessionsFor('c/gemini')], ['abc-m2']);
+  assert.equal(calls.at(-1).session, 'abc-chair');
+  assert.ok(calls.filter((c) => c.model !== 'j').every((c) => c.effort === 'low'));
+  assert.equal(calls.at(-1).effort, undefined, 'the chair runs at its default effort');
+  assert.ok(Math.abs(res.saved - 9 * 0.0005) < 1e-12);
+});
+
+test('member histories only grow, so each round re-sends the previous round as a cacheable prefix', async () => {
+  const { complete, calls } = fakeComplete();
+  await runCouncil({ question: 'Q?', members, rounds: 2, judgeModel: 'j', complete });
+  const claude = calls.filter((c) => c.model === 'a/claude').map((c) => c.messages);
+  for (let r = 1; r < claude.length; r++) assert.deepEqual(claude[r].slice(0, claude[r - 1].length), claude[r - 1]);
+});
+
+test('requests opt Claude into caching and pin a session; others cache automatically', () => {
+  const claude = requestBody({ model: '~anthropic/claude-sonnet-latest', messages: [], session: 's-m0', effort: 'low' });
+  assert.deepEqual(claude.cache_control, { type: 'ephemeral' });
+  assert.equal(claude.session_id, 's-m0');
+  assert.deepEqual(claude.reasoning, { effort: 'low' });
+  const gpt = requestBody({ model: 'openai/gpt-6.1-sol', messages: [] });
+  assert.equal(gpt.cache_control, undefined);
+  assert.equal(gpt.session_id, undefined);
+  assert.equal(gpt.reasoning, undefined);
+  assert.ok(needsCacheOptIn('anthropic/claude-haiku-5.5'));
+  assert.ok(!needsCacheOptIn('google/gemini-2.5-pro'));
+});
+
+test('cache savings use the reported discount, else token counts and prices', () => {
+  assert.equal(cacheSavings({}, 0.0123, null), 0.0123);
+  const p = { prompt: 2, cacheRead: 0.2, cacheWrite: 2.5 };
+  // 10k tokens read at $0.20 instead of $2.00 saves $0.018; 2k written at $2.50 instead of $2.00 costs $0.001.
+  const s = cacheSavings({ prompt_tokens_details: { cached_tokens: 10000, cache_write_tokens: 2000 } }, undefined, p);
+  assert.ok(Math.abs(s - 0.017) < 1e-12);
+  assert.equal(cacheSavings(undefined, undefined, p), 0);
+  assert.equal(cacheSavings({ prompt_tokens_details: { cached_tokens: 5 } }, undefined, undefined), 0);
 });
