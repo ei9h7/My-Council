@@ -249,6 +249,29 @@ function renderCouncil() {
   });
   $('sharedModel').disabled = running;
   $('sharedOther').disabled = running;
+  renderCouncilChip(members);
+}
+
+/** The small "who's on the council" button in the composer; opens Settings at the council. */
+function renderCouncilChip(members) {
+  const chipEl = $('councilChip');
+  const avatars = chipEl.querySelector('.avatars');
+  avatars.innerHTML = '';
+  for (const m of members) {
+    const brand = brandOf(m.model);
+    const av = document.createElement('span');
+    av.className = 'avatar';
+    av.dataset.brand = brand ?? 'other';
+    av.textContent = BRANDS[brand]?.initial ?? '?';
+    avatars.append(av);
+  }
+  const c = settings.council;
+  const label =
+    c.mode === 'priorities'
+      ? `${displayModel(c.shared)} × 3 priorities`
+      : members.map((m) => m.name).join(' · ') + (c.mode === 'mixed' ? ' + priorities' : '');
+  chipEl.querySelector('.label').textContent = label;
+  chipEl.disabled = running;
 }
 
 function nameFor(model) {
@@ -607,6 +630,7 @@ async function convene() {
   if (!question) return void $('question').focus();
   if (mainBox.reading()) return void ($('status').textContent = 'Still reading your attachments — try again in a moment.');
 
+  document.body.classList.add('started');
   sessions = [];
   earlierEvidence = [];
   $('sessions').innerHTML = '';
@@ -863,10 +887,17 @@ function exportTranscript() {
 
 // ---------- settings dialog ----------
 
-function openSettings(focusKey = false) {
+function openSettings(focusKey = false, section = null) {
   const d = $('settings');
   if (!d.open) d.showModal();
-  if (focusKey && !backend.hosted) $('apiKey').focus();
+  if (section) {
+    d.querySelector('form').scrollTop = 0;
+    $(section).scrollIntoView({ block: 'start' });
+  }
+  if (focusKey && !backend.hosted) {
+    $('connectSection').scrollIntoView({ block: 'start' });
+    $('apiKey').focus();
+  }
 }
 
 function syncSettingsForm() {
@@ -911,6 +942,7 @@ async function verifyKey() {
 
 function wireSettings() {
   $('settingsBtn').addEventListener('click', () => openSettings());
+  $('councilChip').addEventListener('click', () => openSettings(false, 'councilSection'));
   $('welcomeBtn').addEventListener('click', () => openSettings(true));
   $('themeBtn').addEventListener('click', () => {
     settings.theme = isDark() ? 'light' : 'dark';

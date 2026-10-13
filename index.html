@@ -14,7 +14,7 @@
   </script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500&display=swap" />
   <link rel="stylesheet" href="src/styles.css" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234355b9'/%3E%3Ccircle cx='10' cy='13' r='3.2' fill='white'/%3E%3Ccircle cx='22' cy='13' r='3.2' fill='white'/%3E%3Ccircle cx='16' cy='21' r='3.2' fill='white'/%3E%3C/svg%3E" />
 </head>
@@ -39,54 +39,37 @@
   </header>
 
   <main>
-    <section id="welcome" class="card welcome" hidden>
-      <div>
-        <h2>Welcome to My Council</h2>
-        <p>Ask a question and three AIs answer it, debate each other, and tell you where they agree. To start, connect an OpenRouter account — one account covers Claude, ChatGPT, Gemini and more.</p>
-      </div>
-      <button id="welcomeBtn" type="button" class="btn filled">Connect OpenRouter</button>
-    </section>
-
-    <section id="askPanel" class="card ask">
-      <label for="question" class="title">What should the council decide?</label>
-      <textarea id="question" rows="4" placeholder="e.g. Should I replace my 12-year-old furnace now or wait until it fails?"></textarea>
-      <div class="attach">
-        <label for="files" class="btn tonal small">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 6.5v10a4.5 4.5 0 0 1-9 0V5a3 3 0 0 1 6 0v10.5a1.5 1.5 0 0 1-3 0V6.5H9v9a3 3 0 0 0 6 0V5a4.5 4.5 0 0 0-9 0v11.5a6 6 0 0 0 12 0v-10h-1.5z"/></svg>
-          Attach files
-        </label>
-        <input id="files" type="file" multiple hidden />
-        <span class="hint">Optional — quotes, reports, photos, PDFs. Or drop them here.</span>
-      </div>
-      <ul id="attachList" class="attach-list"></ul>
-      <p id="attachWarn" class="hint warn"></p>
-      <div class="ask-footer">
-        <p id="estimate" class="hint"></p>
-        <div class="actions">
-          <button id="stop" type="button" class="btn outlined" hidden>Stop</button>
-          <button id="go" type="button" class="btn filled">Convene the council</button>
+    <section id="askPanel" class="hero">
+      <h1 class="hero-title">What should the council decide?</h1>
+      <p class="hero-sub">Three AIs answer, debate each other, and tell you where they agree.</p>
+      <div class="composer">
+        <textarea id="question" rows="3" aria-label="Your question" placeholder="Ask a question, e.g. Should I replace my 12-year-old furnace now or wait until it fails?"></textarea>
+        <ul id="attachList" class="attach-list"></ul>
+        <div class="composer-bar">
+          <label for="files" class="icon-btn" title="Attach files (PDF, Word, images, text)" aria-label="Attach files">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 6.5v10a4.5 4.5 0 0 1-9 0V5a3 3 0 0 1 6 0v10.5a1.5 1.5 0 0 1-3 0V6.5H9v9a3 3 0 0 0 6 0V5a4.5 4.5 0 0 0-9 0v11.5a6 6 0 0 0 12 0v-10h-1.5z"/></svg>
+          </label>
+          <input id="files" type="file" multiple hidden />
+          <button id="councilChip" type="button" class="council-chip" title="Change the council">
+            <span class="avatars"></span><span class="label"></span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5z"/></svg>
+          </button>
+          <span class="spacer"></span>
+          <button id="stop" type="button" class="btn outlined small" hidden>Stop</button>
+          <button id="go" type="button" class="send-btn" aria-label="Convene the council" title="Convene the council (Ctrl/⌘ + Enter)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 4.6 11.4 6 12.8l5-5V20h2V7.8l5 5 1.4-1.4z"/></svg>
+          </button>
         </div>
       </div>
+      <p id="attachWarn" class="hint warn"></p>
+      <p id="welcome" class="notice" hidden>To start, connect an OpenRouter account — one account covers Claude, ChatGPT, Gemini and more.
+        <button id="welcomeBtn" type="button" class="btn text small">Connect OpenRouter</button></p>
+      <p id="estimate" class="hint hero-hint"></p>
       <div class="run-line">
         <p id="status" class="hint" role="status"></p>
         <span id="cost" class="hint"></span>
         <button id="export" type="button" class="btn text small" hidden>Download transcript</button>
       </div>
-    </section>
-
-    <section class="card council">
-      <div class="council-head">
-        <h2>Your council</h2>
-        <div id="modes" class="segmented" role="radiogroup" aria-label="Council style"></div>
-      </div>
-      <p id="modeHint" class="hint"></p>
-      <div id="sharedRow" class="shared-row" hidden>
-        <label class="field">AI model for all three members
-          <select id="sharedModel" class="model"></select>
-        </label>
-        <input id="sharedOther" class="other-model" list="modelList" placeholder="Any OpenRouter model ID, e.g. mistralai/mistral-large" hidden />
-      </div>
-      <div id="seats" class="seats"></div>
     </section>
 
     <div id="sessions"></div>
@@ -127,6 +110,19 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7l-1.4-1.4L9.2 12 2.9 5.7l1.4-1.4 6.3 6.3 6.3-6.3z" transform="translate(1 0)"/></svg>
         </button>
       </header>
+
+      <section id="councilSection" class="group">
+        <h3>Council</h3>
+        <div id="modes" class="segmented" role="radiogroup" aria-label="Council style"></div>
+        <p id="modeHint" class="hint"></p>
+        <div id="sharedRow" class="shared-row" hidden>
+          <label class="field">AI model for all three members
+            <select id="sharedModel" class="model"></select>
+          </label>
+          <input id="sharedOther" class="other-model" list="modelList" placeholder="Any OpenRouter model ID, e.g. mistralai/mistral-large" hidden />
+        </div>
+        <div id="seats" class="seats"></div>
+      </section>
 
       <section id="connectSection" class="group">
         <h3>OpenRouter connection</h3>
