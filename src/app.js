@@ -994,7 +994,23 @@ function updateWelcome() {
 
 // ---------- init ----------
 
+/**
+ * Invite links: https://…/My-Council/#key=sk-or-… saves that OpenRouter key and connects the tester
+ * in one click. The part after # never leaves the browser (it isn't sent to the web server), and it
+ * is removed from the address bar straight away.
+ */
+function acceptInvite() {
+  const key = new URLSearchParams(location.hash.slice(1)).get('key')?.trim();
+  if (!key) return false;
+  history.replaceState(null, '', location.pathname + location.search);
+  if (!/^sk-or-[\w-]{10,}$/.test(key) || backend.hosted) return false;
+  settings.apiKey = key;
+  save();
+  return true;
+}
+
 export function start() {
+  const invited = acceptInvite();
   buildSeats();
   applyTheme();
   syncSettingsForm();
@@ -1008,6 +1024,10 @@ export function start() {
     for (const id of ['anyModel', 'cachingOnly']) $(id).closest('.switch').hidden = true;
     renderCouncil();
   } else if (settings.apiKey) verifyKey();
+  if (invited) {
+    $('status').textContent = 'You’re connected with an invite key. Ask the council anything.';
+    $('question').focus();
+  }
 
   wireDrop($('askPanel'), mainBox);
   wireDrop($('followPanel'), followBox);
