@@ -80,6 +80,15 @@ Opening `index.html` straight from disk won't work, because ES modules need to b
 
 Open Settings (gear icon) → OpenRouter connection and paste a key; **Check** shows the credit left on it. The key is saved in this browser's localStorage and is sent only to `openrouter.ai`. Anyone with access to the browser profile can read it, so on a shared machine set a credit limit on the key at [openrouter.ai/keys](https://openrouter.ai/keys).
 
+### Inviting testers on your account (no server needed)
+
+Give each tester their own OpenRouter key with a spending cap, and send it as an invite link:
+
+1. At [openrouter.ai/keys](https://openrouter.ai/keys), create a key per tester (name it after them) and set a **credit limit**, e.g. $5.
+2. Send them `https://<user>.github.io/My-Council/#key=<their key>`.
+
+Opening the link saves the key in their browser and connects them; the key is removed from the address bar, and the part after `#` is never sent to the web server. You see each tester's spend per key on OpenRouter and can delete a key to cut someone off. The tester can see their own key, so treat the link like a gift card worth its credit limit. For a login-based setup where testers never see a key, see the hosted branch.
+
 Settings also holds the council (style, models, priorities), the debate rounds (default 3), early stop, clarifying questions, the chair model, theme, and Advanced options.
 
 ## Files
