@@ -4,7 +4,7 @@ import { listModels, makeComplete, checkKey, needsCacheOptIn } from './openroute
 import { renderMarkdown } from './markdown.js';
 import { ACCEPT, readAttachment } from './attachments.js';
 import {
-  BRANDS, CATALOG, CHAIRS, DEFAULT_CHAIR, DEFAULT_MODELS, DEFAULT_PERSONAS, MODES, brandOf, displayModel,
+  BRANDS, CATALOG, CHAIRS, DEFAULT_CHAIR, DEFAULT_MODELS, DEFAULT_PERSONAS, DEFAULT_FIGURES, MODES, brandOf, displayModel,
 } from './catalog.js';
 
 const $ = (id) => document.getElementById(id);
@@ -38,6 +38,7 @@ const DEFAULTS = {
     models: [...DEFAULT_MODELS],
     shared: DEFAULT_MODELS[0],
     personas: [...DEFAULT_PERSONAS],
+    figures: [...DEFAULT_FIGURES],
     custom: ['', '', ''],
   },
 };
@@ -54,6 +55,7 @@ function load() {
   } catch {}
   const out = { ...DEFAULTS, ...Object.fromEntries(Object.entries(s).filter(([, v]) => v != null)) };
   out.council = { ...DEFAULTS.council, ...(s.council ?? {}) };
+  if (!(out.council.mode in MODES)) out.council.mode = 'ais'; // "Both" was retired
   out.rounds = Math.min(5, Math.max(0, Number(out.rounds) || 0));
   if (!CHAIRS.some((c) => c.id === out.chair)) out.chair = DEFAULT_CHAIR;
   return out;
@@ -146,11 +148,6 @@ function buildSeats() {
   for (let i = 0; i < 3; i++) {
     const seat = tpl.content.firstElementChild.cloneNode(true);
     const persona = seat.querySelector('.persona');
-    const groups = { priority: document.createElement('optgroup'), personality: document.createElement('optgroup') };
-    groups.priority.label = 'Priorities';
-    groups.personality.label = 'Personalities';
-    for (const [key, p] of Object.entries(PERSONAS)) groups[p.group ?? 'priority'].append(new Option(p.label, key));
-    persona.append(groups.priority, groups.personality);
     const model = seat.querySelector('.model');
     const other = seat.querySelector('.other-model');
     const custom = seat.querySelector('.customPersona');
@@ -170,7 +167,7 @@ function buildSeats() {
       councilChanged();
     });
     persona.addEventListener('change', () => {
-      settings.council.personas[i] = persona.value;
+      seatPersonas()[i] = persona.value;
       councilChanged();
     });
     custom.addEventListener('change', () => {
@@ -201,6 +198,12 @@ function councilChanged() {
   refreshEstimates();
 }
 
+/** The per-seat persona list for the current style: famous figures, or priorities. */
+function seatPersonas() {
+  const c = settings.council;
+  return c.mode === 'personalities' ? c.figures : c.personas;
+}
+
 function renderCouncil() {
   const c = settings.council;
   renderSegmented($('modes'), Object.fromEntries(Object.entries(MODES).map(([k, v]) => [k, v.label])), c.mode, (mode) => {
@@ -210,7 +213,9 @@ function renderCouncil() {
   for (const b of $('modes').children) b.disabled = running;
   $('modeHint').textContent = MODES[c.mode].hint;
 
-  const shared = c.mode === 'priorities';
+  const shared = c.mode !== 'ais';
+  const group = MODES[c.mode].group;
+  const picks = seatPersonas();
   $('sharedRow').hidden = !shared;
   if (shared) {
     const known = fillModelSelect($('sharedModel'), c.shared);
@@ -235,11 +240,18 @@ function renderCouncil() {
       }
     } else other.hidden = true;
 
-    const showPersona = c.mode !== 'ais';
+    const showPersona = shared;
     seat.querySelector('.persona-field').hidden = !showPersona;
-    seat.querySelector('.persona').value = c.personas[i] in PERSONAS ? c.personas[i] : 'balanced';
+    seat.querySelector('.persona-label').textContent = group === 'personality' ? 'Personality' : 'Perspective';
+    const sel = seat.querySelector('.persona');
+    if (showPersona && sel.dataset.group !== group) {
+      sel.innerHTML = '';
+      for (const [key, p] of Object.entries(PERSONAS)) if ((p.group ?? 'priority') === group) sel.add(new Option(p.label, key));
+      sel.dataset.group = group;
+    }
+    if (showPersona) sel.value = PERSONAS[picks[i]] && (PERSONAS[picks[i]].group ?? 'priority') === group ? picks[i] : sel.options[0].value;
     const custom = seat.querySelector('.customPersona');
-    custom.hidden = !showPersona || c.personas[i] !== 'custom';
+    custom.hidden = !showPersona || picks[i] !== 'custom';
     custom.value = c.custom[i] ?? '';
 
     const brand = brandOf(m.model);
@@ -272,9 +284,11 @@ function renderCouncilChip(members) {
   }
   const c = settings.council;
   const label =
-    c.mode === 'priorities'
-      ? `${displayModel(c.shared)} × 3 priorities`
-      : members.map((m) => m.name).join(' · ') + (c.mode === 'mixed' ? ' + perspectives' : '');
+    c.mode === 'ais'
+      ? members.map((m) => m.name).join(' · ')
+      : c.mode === 'personalities'
+        ? `${displayModel(c.shared)} as ${members.map((m) => PERSONAS[m.persona]?.label.split(' ').pop()).join(', ')}`
+        : `${displayModel(c.shared)} × 3 perspectives`;
   chipEl.querySelector('.label').textContent = label;
   chipEl.disabled = running;
 }
@@ -288,8 +302,10 @@ function nameFor(model) {
 function readSeats() {
   const c = settings.council;
   const seats = [0, 1, 2].map((i) => {
-    const model = (c.mode === 'priorities' ? c.shared : c.models[i]) || '';
-    const persona = c.mode === 'ais' ? 'balanced' : c.personas[i] || 'balanced';
+    const model = (c.mode === 'ais' ? c.models[i] : c.shared) || '';
+    const picked = seatPersonas()[i];
+    const group = MODES[c.mode].group;
+    const persona = group && PERSONAS[picked] && (PERSONAS[picked].group ?? 'priority') === group ? picked : group === 'personality' ? DEFAULT_FIGURES[i] : group ? DEFAULT_PERSONAS[i] : 'balanced';
     return { name: nameFor(model), model, vision: price(model)?.vision, persona, customPersona: c.custom[i] ?? '' };
   });
   // Two seats with the same model and persona would get the same label; number them.

@@ -56,16 +56,17 @@ export const DEFAULT_CHAIR = CHAIRS[0].id;
 
 export const DEFAULT_MODELS = ['~anthropic/claude-sonnet-latest', '~openai/gpt-sol-latest', '~google/gemini-pro-latest'];
 export const DEFAULT_PERSONAS = ['money', 'time', 'stress'];
+export const DEFAULT_FIGURES = ['einstein', 'jobs', 'lincoln'];
 
 /**
  * Council styles. Comparing personas only works when the model is the same in every seat, otherwise
- * you can't tell whether a disagreement comes from the model or the persona, so "priorities" uses
- * one model for all three.
+ * you can't tell whether a disagreement comes from the model or the persona, so "personalities" and
+ * "priorities" (shown as Perspectives) use one model for all three.
  */
 export const MODES = {
   ais: { label: 'Different AIs', hint: 'Three different AIs, each giving its best balanced answer.' },
-  priorities: { label: 'Different perspectives', hint: 'One AI argues three sides: priorities like money, time and stress, or personalities like Einstein and Lincoln.' },
-  mixed: { label: 'Both', hint: 'Three different AIs, each with its own priority or personality.' },
+  personalities: { label: 'Personalities', group: 'personality', hint: 'One AI channels three famous minds, like Einstein, Steve Jobs and Lincoln.' },
+  priorities: { label: 'Perspectives', group: 'priority', hint: 'One AI argues three sides: save me money, time and stress.' },
 };
 
 export function brandOf(model) {

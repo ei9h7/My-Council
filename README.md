@@ -56,12 +56,12 @@ The landing page is just the question box. The chip under it shows who's on the 
 | Style | Seats |
 |---|---|
 | Different AIs (default) | three different models, all Balanced |
-| Different perspectives | **one** model for all three seats, each with a perspective: a priority (Save me money / time / stress, Devil's advocate, Balanced, Custom) or a personality (Einstein, Tesla, Trump, Lincoln, Jobs, Ford, Franklin, Buffett, Curie, Churchill, Marcus Aurelius) |
-| Both | a different model *and* a different perspective per seat |
+| Personalities | **one** model for all three seats, each channelling a famous figure: Einstein, Tesla, Trump, Lincoln, Jobs, Ford, Franklin, Buffett, Curie, Churchill, Marcus Aurelius |
+| Perspectives | **one** model for all three seats, each with a priority: Save me money / time / stress, Devil's advocate, Balanced, or Custom |
 
 Personalities advise the way that person would (their known thinking and approach) without claiming to be them or inventing quotes. Add more in `PERSONAS` in `src/council.js`.
 
-"Different perspectives" uses one model on purpose: if the model changes too, you can't tell whether a disagreement comes from the model or the persona.
+Personalities and Perspectives use one model on purpose: if the model changes too, you can't tell whether a disagreement comes from the model or the persona.
 
 The model lists (`src/catalog.js`) offer each family's "· latest" alias (OpenRouter keeps it pointed at the newest Sonnet, GPT Sol, Gemini Pro, …) plus a couple of fixed earlier versions, and a fast & cheap option. `$`–`$$$$` shows relative price.
 
@@ -95,7 +95,7 @@ Opening the link saves the key in their browser and connects them; the key is re
 
 Press **Listen** (next to the cost line once a debate starts) to have it read aloud: each round, every member's answer and stance, then the chair's verdict. Each member gets its own voice (or pitch, on devices with few voices). Press it mid-debate and it starts from the beginning and keeps up as new answers arrive; press **Stop listening** to stop. It uses the browser's built-in speech, so it's free and needs no extra key; voice quality depends on the device (Safari and Edge on Mac/iPhone/Windows have the best ones).
 
-Settings also holds the council (style, models, priorities), the debate rounds (default 3), early stop, clarifying questions, the chair model, theme, and Advanced options.
+Settings also holds the council (style, models, personalities, perspectives), the debate rounds (default 3), early stop, clarifying questions, the chair model, theme, and Advanced options.
 
 ## Files
 
