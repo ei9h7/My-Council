@@ -64,8 +64,8 @@ export const DEFAULT_PERSONAS = ['money', 'time', 'stress'];
  */
 export const MODES = {
   ais: { label: 'Different AIs', hint: 'Three different AIs, each giving its best balanced answer.' },
-  priorities: { label: 'Different priorities', hint: 'One AI argues three sides: money, time and stress.' },
-  mixed: { label: 'Both', hint: 'Three different AIs, each with its own priority.' },
+  priorities: { label: 'Different perspectives', hint: 'One AI argues three sides: priorities like money, time and stress, or personalities like Einstein and Lincoln.' },
+  mixed: { label: 'Both', hint: 'Three different AIs, each with its own priority or personality.' },
 };
 
 export function brandOf(model) {

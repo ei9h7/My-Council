@@ -33,7 +33,7 @@ const DEFAULTS = {
   cachingOnly: true,
   theme: 'system',
   council: {
-    mode: 'mixed',
+    mode: 'ais',
     models: [...DEFAULT_MODELS],
     shared: DEFAULT_MODELS[0],
     personas: [...DEFAULT_PERSONAS],
@@ -145,7 +145,11 @@ function buildSeats() {
   for (let i = 0; i < 3; i++) {
     const seat = tpl.content.firstElementChild.cloneNode(true);
     const persona = seat.querySelector('.persona');
-    for (const [key, p] of Object.entries(PERSONAS)) persona.add(new Option(p.label, key));
+    const groups = { priority: document.createElement('optgroup'), personality: document.createElement('optgroup') };
+    groups.priority.label = 'Priorities';
+    groups.personality.label = 'Personalities';
+    for (const [key, p] of Object.entries(PERSONAS)) groups[p.group ?? 'priority'].append(new Option(p.label, key));
+    persona.append(groups.priority, groups.personality);
     const model = seat.querySelector('.model');
     const other = seat.querySelector('.other-model');
     const custom = seat.querySelector('.customPersona');
@@ -269,7 +273,7 @@ function renderCouncilChip(members) {
   const label =
     c.mode === 'priorities'
       ? `${displayModel(c.shared)} × 3 priorities`
-      : members.map((m) => m.name).join(' · ') + (c.mode === 'mixed' ? ' + priorities' : '');
+      : members.map((m) => m.name).join(' · ') + (c.mode === 'mixed' ? ' + perspectives' : '');
   chipEl.querySelector('.label').textContent = label;
   chipEl.disabled = running;
 }

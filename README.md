@@ -55,11 +55,13 @@ The landing page is just the question box. The chip under it shows who's on the 
 
 | Style | Seats |
 |---|---|
-| Different AIs | three different models, all Balanced |
-| Different priorities | **one** model for all three seats, playing Save me money / time / stress (or Devil's advocate, Balanced, Custom) |
-| Both (default) | a different model *and* a different priority per seat |
+| Different AIs (default) | three different models, all Balanced |
+| Different perspectives | **one** model for all three seats, each with a perspective: a priority (Save me money / time / stress, Devil's advocate, Balanced, Custom) or a personality (Einstein, Tesla, Trump, Lincoln, Jobs, Ford, Franklin, Buffett, Curie, Churchill, Marcus Aurelius) |
+| Both | a different model *and* a different perspective per seat |
 
-"Different priorities" uses one model on purpose: if the model changes too, you can't tell whether a disagreement comes from the model or the persona.
+Personalities advise the way that person would (their known thinking and approach) without claiming to be them or inventing quotes. Add more in `PERSONAS` in `src/council.js`.
+
+"Different perspectives" uses one model on purpose: if the model changes too, you can't tell whether a disagreement comes from the model or the persona.
 
 The model lists (`src/catalog.js`) offer each family's "· latest" alias (OpenRouter keeps it pointed at the newest Sonnet, GPT Sol, Gemini Pro, …) plus a couple of fixed earlier versions, and a fast & cheap option. `$`–`$$$$` shows relative price.
 
