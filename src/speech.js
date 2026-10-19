@@ -48,6 +48,15 @@ export function chunks(text, max = 220) {
 
 export const canSpeak = () => typeof speechSynthesis !== 'undefined' && typeof SpeechSynthesisUtterance !== 'undefined';
 
+// iPhone/iPad (iPadOS reports itself as a Mac with touch). Safari there lists voices that aren't
+// downloaded and stay silent, so it sticks to the default voice and varies pitch instead.
+export const isAppleMobile = () =>
+  typeof navigator !== 'undefined' &&
+  (/iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+
+// macOS/iOS novelty voices (sound effects, singing, whispering) that make a debate unlistenable.
+const NOVELTY = /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Deranged|Good News|Hysterical|Jester|Organ|Pipe Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox)\b/i;
+
 /**
  * A queue of segments ({ voice: 0-2 for the members, 'chair' for announcements and the verdict, text })
  * that keeps growing while a debate runs. play() reads from the start and keeps up with new segments
@@ -55,15 +64,18 @@ export const canSpeak = () => typeof speechSynthesis !== 'undefined' && typeof S
  */
 export function createNarrator({ onChange = () => {} } = {}) {
   let segments = [];
-  let cursor = 0;
+  let cursor = 0; // next segment
+  let queue = []; // chunks of the segment being read
   let playing = false;
-  let speaking = false;
+  let current = null; // the utterance being spoken; held so it isn't garbage-collected mid-sentence (a WebKit bug that drops onend)
+  let timer = 0;
   let voices = [];
   let gen = 0; // bumped on play/stop so callbacks from cancelled utterances are ignored
 
   const loadVoices = () => {
+    if (isAppleMobile()) return void (voices = []);
     const lang = (navigator.language || 'en').slice(0, 2);
-    const all = speechSynthesis.getVoices();
+    const all = speechSynthesis.getVoices().filter((v) => !NOVELTY.test(v.name));
     const mine = all.filter((v) => v.lang?.toLowerCase().startsWith(lang));
     voices = (mine.length ? mine : all).sort((a, b) => Number(b.localService) - Number(a.localService));
   };
@@ -81,30 +93,45 @@ export function createNarrator({ onChange = () => {} } = {}) {
     return { voice: null, pitch };
   };
 
+  // Speaks one chunk at a time. A watchdog moves on if the engine never reports the end (Safari can
+  // drop onend, or stay silent on a voice it can't load), so the queue never stalls.
   function next() {
-    if (!playing || speaking) return;
-    if (cursor >= segments.length) return; // wait for more; push() resumes
-    const seg = segments[cursor++];
-    const parts = chunks(seg.text);
-    const { voice, pitch } = voiceFor(seg.voice);
-    speaking = true;
-    let left = parts.length;
+    if (!playing || current) return;
+    if (!queue.length) {
+      if (cursor >= segments.length) return; // wait for more; push() resumes
+      const seg = segments[cursor++];
+      queue = chunks(seg.text).map((text) => ({ text, ...voiceFor(seg.voice) }));
+      return next();
+    }
+    const { text, voice, pitch } = queue.shift();
+    const u = new SpeechSynthesisUtterance(text);
+    if (voice) u.voice = voice;
+    u.lang = voice?.lang || navigator.language || 'en-US';
+    u.pitch = pitch;
+    u.rate = 1;
+    u.volume = 1;
     const mine = gen;
+    let started = false;
     const done = () => {
-      if (mine !== gen || --left > 0) return;
-      speaking = false;
+      if (mine !== gen || current !== u) return;
+      clearTimeout(timer);
+      current = null;
       next();
     };
-    if (!left) return done();
-    for (const p of parts) {
-      const u = new SpeechSynthesisUtterance(p);
-      if (voice) u.voice = voice;
-      u.lang = voice?.lang || navigator.language || 'en';
-      u.pitch = pitch;
-      u.onend = done;
-      u.onerror = done;
-      speechSynthesis.speak(u);
-    }
+    const watch = (ms) => {
+      clearTimeout(timer);
+      timer = setTimeout(done, ms);
+    };
+    u.onstart = () => {
+      started = true;
+      watch(4000 + text.length * 120); // ~2.5× a normal speaking pace
+    };
+    u.onend = done;
+    u.onerror = done;
+    current = u;
+    watch(5000); // never started
+    speechSynthesis.resume?.(); // Safari can be left paused after the page was backgrounded
+    speechSynthesis.speak(u);
   }
 
   return {
@@ -120,11 +147,15 @@ export function createNarrator({ onChange = () => {} } = {}) {
       segments.push({ voice, text: t });
       next();
     },
+    /** Call straight from the click: iOS only allows speech that starts inside a user gesture. */
     play() {
       if (!canSpeak()) return;
       gen++;
-      speechSynthesis.cancel();
-      speaking = false;
+      clearTimeout(timer);
+      // cancel() right before speak() can leave Safari silent, so only cancel when something is queued.
+      if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
+      current = null;
+      queue = [];
       cursor = 0;
       playing = true;
       onChange(true);
@@ -132,8 +163,10 @@ export function createNarrator({ onChange = () => {} } = {}) {
     },
     stop() {
       gen++;
+      clearTimeout(timer);
       playing = false;
-      speaking = false;
+      current = null;
+      queue = [];
       if (canSpeak()) speechSynthesis.cancel();
       onChange(false);
     },

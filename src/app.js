@@ -1,5 +1,5 @@
 import { PERSONAS, runCouncil, transcriptMarkdown, sessionSummary } from './council.js';
-import { canSpeak, createNarrator } from './speech.js';
+import { canSpeak, createNarrator, isAppleMobile } from './speech.js';
 import { listModels, makeComplete, checkKey, needsCacheOptIn } from './openrouter.js';
 import { renderMarkdown } from './markdown.js';
 import { ACCEPT, readAttachment } from './attachments.js';
@@ -650,6 +650,8 @@ const narrator = createNarrator({
   onChange: (playing) => {
     $('listen').textContent = playing ? 'Stop listening' : 'Listen';
     $('listen').setAttribute('aria-pressed', String(playing));
+    // iPhone's silent switch mutes web speech even though other sounds may play.
+    $('listenHint').hidden = !(playing && isAppleMobile());
   },
 });
 
