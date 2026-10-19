@@ -547,7 +547,7 @@ function collapsible(cardEl) {
 }
 
 // The protocol lines (STANCE / AGREEMENT / QUESTION) are for the engine; the card shows the stance as a footer instead.
-const PROTOCOL_LINE = /^\s*\**(STANCE|AGREEMENT|QUESTION)\**\s*:.*$/gim;
+const PROTOCOL_LINE = /^\s*\**(SAY|STANCE|AGREEMENT|QUESTION)\**\s*:.*$/gim;
 const stripProtocol = (text) => text.replace(PROTOCOL_LINE, '').trim();
 
 const AGREE = { full: 'Agrees', partial: 'Partly agrees', none: 'Disagrees' };
@@ -843,7 +843,11 @@ async function runSession({ config, kind, title, userQuestion, engineQuestion, a
         }
         if (e.round > 1 && e.entry.agreement) c.querySelector('header').insertAdjacentHTML('beforeend', chip(e.entry.agreement, AGREE[e.entry.agreement]));
         collapsible(c);
-        if (e.entry.stance) narrator.push(e.index, `${labels[e.index].replace(/ · Balanced advisor$/, '')}: ${e.entry.stance}`);
+        // Read the member's own spoken recap (stance and reason, or what they challenged and whether
+        // they moved); older or non-compliant answers fall back to the stance.
+        if (e.entry.say || e.entry.stance) {
+          narrator.push(e.index, `${labels[e.index].replace(/ · Balanced advisor$/, '')}: ${e.entry.say ?? e.entry.stance}`);
+        }
         ui.cost.textContent = costText(e.cost, e.saved);
         break;
       }

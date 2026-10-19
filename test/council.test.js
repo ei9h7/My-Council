@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  runCouncil, parseStance, parseVerdict, systemPrompt, openingMessage, transcriptMarkdown,
+  runCouncil, parseStance, parseSay, parseVerdict, systemPrompt, openingMessage, transcriptMarkdown,
   parseQuestion, clarificationsBlock, sessionSummary, CLARIFY_INSTRUCTION, parseMerged,
 } from '../src/council.js';
 import { requestBody, cacheSavings, needsCacheOptIn } from '../src/openrouter.js';
@@ -88,6 +88,8 @@ test('parseStance handles plain and bolded forms', () => {
   assert.deepEqual(parseStance('**STANCE:** Wait.\n**AGREEMENT:** Full — mostly'), { stance: 'Wait.', agreement: 'full' });
   assert.deepEqual(parseStance('no markers'), { stance: null, agreement: null });
   assert.equal(parseStance('AGREEMENT: n/a').agreement, null);
+  assert.equal(parseSay('x\n**SAY:** I still back X; Gemini ignores the fees.\nSTANCE: X'), 'I still back X; Gemini ignores the fees.');
+  assert.equal(parseSay('no markers'), null);
 });
 
 test('parseVerdict accepts bare or fenced JSON and rejects junk', () => {
