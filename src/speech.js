@@ -1,6 +1,6 @@
 // Read the debate aloud with the browser's built-in speech synthesis: free, no key, nothing leaves
-// the device except what the OS voice engine does. Each seat gets its own voice (or, when the
-// device has few voices, its own pitch) so you can tell the members apart by ear.
+// the device except what the OS voice engine does. It reads the short version: each member's stance
+// per round, then the chair's verdict, in the most natural voices the device has.
 
 /** Markdown → something a voice can read: no symbols, links read as their text, code dropped. */
 export function speakable(md) {
@@ -48,14 +48,30 @@ export function chunks(text, max = 220) {
 
 export const canSpeak = () => typeof speechSynthesis !== 'undefined' && typeof SpeechSynthesisUtterance !== 'undefined';
 
-// iPhone/iPad (iPadOS reports itself as a Mac with touch). Safari there lists voices that aren't
-// downloaded and stay silent, so it sticks to the default voice and varies pitch instead.
+// iPhone/iPad (iPadOS reports itself as a Mac with touch).
 export const isAppleMobile = () =>
   typeof navigator !== 'undefined' &&
   (/iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
 
-// macOS/iOS novelty voices (sound effects, singing, whispering) that make a debate unlistenable.
-const NOVELTY = /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Deranged|Good News|Hysterical|Jester|Organ|Pipe Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox)\b/i;
+// macOS/iOS novelty and old-style voices (sound effects, singing, the 1990s robot voices).
+const NOVELTY =
+  /^(Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Deranged|Eddy|Flo|Fred|Good News|Grandma|Grandpa|Hysterical|Jester|Junior|Kathy|Organ|Pipe Organ|Ralph|Reed|Rocko|Sandy|Shelley|Superstar|Trinoids|Whisper|Wobble|Zarvox)\b/i;
+
+/** Natural-sounding voices first: the device's chosen voice, then Premium/Enhanced/neural ones. */
+export function rankVoices(all, language = 'en-US') {
+  const lang = language.toLowerCase();
+  const score = (v) =>
+    (v.default ? 100 : 0) +
+    (/premium/i.test(v.name) ? 60 : 0) +
+    (/enhanced|neural|natural|siri/i.test(v.name) ? 50 : 0) +
+    (/^(Samantha|Ava|Allison|Susan|Zoe|Nicky|Tom|Evan|Nathan|Daniel|Karen|Moira|Serena|Google)\b/i.test(v.name) ? 30 : 0) +
+    (v.lang?.toLowerCase() === lang ? 5 : 0) +
+    (v.localService ? 2 : 0);
+  const base = lang.slice(0, 2);
+  const usable = all.filter((v) => !NOVELTY.test(v.name));
+  const mine = usable.filter((v) => v.lang?.toLowerCase().replace('_', '-').startsWith(base));
+  return (mine.length ? mine : usable).map((v) => ({ v, s: score(v) })).sort((a, b) => b.s - a.s);
+}
 
 /**
  * A queue of segments ({ voice: 0-2 for the members, 'chair' for announcements and the verdict, text })
@@ -72,25 +88,24 @@ export function createNarrator({ onChange = () => {} } = {}) {
   let voices = [];
   let gen = 0; // bumped on play/stop so callbacks from cancelled utterances are ignored
 
+  const bad = new Set(); // voices that never started speaking (listed but not downloaded)
   const loadVoices = () => {
-    if (isAppleMobile()) return void (voices = []);
-    const lang = (navigator.language || 'en').slice(0, 2);
-    const all = speechSynthesis.getVoices().filter((v) => !NOVELTY.test(v.name));
-    const mine = all.filter((v) => v.lang?.toLowerCase().startsWith(lang));
-    voices = (mine.length ? mine : all).sort((a, b) => Number(b.localService) - Number(a.localService));
+    voices = rankVoices(speechSynthesis.getVoices(), navigator.language || 'en-US');
   };
   if (canSpeak()) {
     loadVoices();
     speechSynthesis.addEventListener?.('voiceschanged', loadVoices);
   }
 
-  // Seats 0-2 and the chair (3) take distinct voices when there are enough, otherwise distinct pitches.
-  const voiceFor = (v) => {
-    const i = v === 'chair' ? 3 : v;
-    const pitch = [1, 0.8, 1.25, 1][i];
-    if (voices.length >= 4) return { voice: voices[i], pitch: 1 };
-    if (voices.length) return { voice: voices[i % voices.length], pitch };
-    return { voice: null, pitch };
+  // The chair takes the best voice. Members take the next good ones when the device has them, and
+  // otherwise share the best one: a natural voice beats telling speakers apart (each line starts
+  // with the speaker's name anyway). Pitch is left alone, since shifting it sounds robotic.
+  const voiceFor = (seat) => {
+    const ok = voices.filter((x) => !bad.has(x.v));
+    if (!ok.length) return null;
+    const good = ok.filter((x) => x.s >= 30);
+    const i = seat === 'chair' ? 0 : seat + 1;
+    return (good.length > i ? good[i] : ok[0]).v;
   };
 
   // Speaks one chunk at a time. A watchdog moves on if the engine never reports the end (Safari can
@@ -100,14 +115,15 @@ export function createNarrator({ onChange = () => {} } = {}) {
     if (!queue.length) {
       if (cursor >= segments.length) return; // wait for more; push() resumes
       const seg = segments[cursor++];
-      queue = chunks(seg.text).map((text) => ({ text, ...voiceFor(seg.voice) }));
+      queue = chunks(seg.text).map((text) => ({ text, seat: seg.voice }));
       return next();
     }
-    const { text, voice, pitch } = queue.shift();
+    const item = queue.shift();
+    const { text } = item;
+    const voice = voiceFor(item.seat);
     const u = new SpeechSynthesisUtterance(text);
     if (voice) u.voice = voice;
     u.lang = voice?.lang || navigator.language || 'en-US';
-    u.pitch = pitch;
     u.rate = 1;
     u.volume = 1;
     const mine = gen;
@@ -122,14 +138,25 @@ export function createNarrator({ onChange = () => {} } = {}) {
       clearTimeout(timer);
       timer = setTimeout(done, ms);
     };
+    // A voice that never starts is listed but not installed: drop it and say this chunk again.
+    const retry = () => {
+      if (mine !== gen || current !== u || started || !voice) return done();
+      bad.add(voice);
+      queue.unshift(item);
+      clearTimeout(timer);
+      current = null;
+      speechSynthesis.cancel();
+      setTimeout(next, 250); // speaking straight after cancel() can be dropped by Safari
+    };
     u.onstart = () => {
       started = true;
       watch(4000 + text.length * 120); // ~2.5× a normal speaking pace
     };
     u.onend = done;
-    u.onerror = done;
+    u.onerror = () => (started ? done() : retry());
     current = u;
-    watch(5000); // never started
+    clearTimeout(timer);
+    timer = setTimeout(retry, 4000); // never started
     speechSynthesis.resume?.(); // Safari can be left paused after the page was backgrounded
     speechSynthesis.speak(u);
   }

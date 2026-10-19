@@ -662,7 +662,6 @@ function verdictSpeech(verdict) {
   const parts = [`The chair's verdict: ${label}.`];
   if (v.recommendation) parts.push(`Recommendation: ${v.recommendation}`);
   if (v.summary) parts.push(v.summary);
-  if (v.disagreements?.length) parts.push(`Still contested: ${v.disagreements.join('. ')}`);
   return parts.join('\n');
 }
 
@@ -842,10 +841,7 @@ async function runSession({ config, kind, title, userQuestion, engineQuestion, a
         }
         if (e.round > 1 && e.entry.agreement) c.querySelector('header').insertAdjacentHTML('beforeend', chip(e.entry.agreement, AGREE[e.entry.agreement]));
         collapsible(c);
-        narrator.push(
-          e.index,
-          `${labels[e.index]}.\n${stripProtocol(e.entry.text)}${e.entry.stance ? `\nStance: ${e.entry.stance}` : ''}`,
-        );
+        if (e.entry.stance) narrator.push(e.index, `${labels[e.index].replace(/ · Balanced advisor$/, '')}: ${e.entry.stance}`);
         ui.cost.textContent = costText(e.cost, e.saved);
         break;
       }

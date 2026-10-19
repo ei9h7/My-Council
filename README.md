@@ -93,7 +93,7 @@ Opening the link saves the key in their browser and connects them; the key is re
 
 ## Listening to the debate
 
-Press **Listen** (next to the cost line once a debate starts) to have it read aloud: each round, every member's answer and stance, then the chair's verdict. Each member gets its own voice (or pitch, on devices with few voices). Press it mid-debate and it starts from the beginning and keeps up as new answers arrive; press **Stop listening** to stop. It uses the browser's built-in speech, so it's free and needs no extra key; voice quality depends on the device (Safari and Edge on Mac/iPhone/Windows have the best ones).
+Press **Listen** (next to the cost line once a debate starts) to hear the short version read aloud: each member's one-line stance per round, then the chair's verdict (recommendation and summary). It picks the most natural voice the device has (your chosen system voice, or a Premium/Enhanced one), never the old robot voices, and skips any voice that's listed but not downloaded. Press it mid-debate and it starts from the beginning and keeps up as new rounds arrive; press **Stop listening** to stop. It uses the browser's built-in speech, so it's free and needs no extra key. On iPhone, the silent switch mutes it; for a better voice, download one under Settings → Accessibility → Spoken Content → Voices.
 
 Settings also holds the council (style, models, personalities, perspectives), the debate rounds (default 3), early stop, clarifying questions, the chair model, theme, and Advanced options.
 

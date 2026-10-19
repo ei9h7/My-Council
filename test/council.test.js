@@ -421,3 +421,10 @@ test('speech: markdown becomes plain sentences and long text is chunked', async 
   assert.ok(parts.every((p) => p.length <= 100));
   assert.equal(parts.join(' ').split(/\s+/).filter((w) => w === 'word' || w === 'word.').length, 200);
 });
+
+test('speech: natural voices rank above robot and novelty voices', async () => {
+  const { rankVoices } = await import('../src/speech.js');
+  const v = (name, extra = {}) => ({ name, lang: 'en-US', localService: true, ...extra });
+  const ranked = rankVoices([v('Fred'), v('Bubbles'), v('Alex'), v('Samantha'), v('Ava (Premium)'), v('Daniel (Enhanced)', { lang: 'en-GB' })], 'en-US');
+  assert.deepEqual(ranked.map((x) => x.v.name), ['Ava (Premium)', 'Daniel (Enhanced)', 'Samantha', 'Alex']);
+});
