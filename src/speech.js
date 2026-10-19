@@ -110,18 +110,20 @@ export function createNarrator({ onChange = () => {}, preferred = () => '' } = {
     speechSynthesis.addEventListener?.('voiceschanged', loadVoices);
   }
 
-  // The chair takes the best voice. Members take the next good ones when the device has them, and
-  // otherwise share the best one: a natural voice beats telling speakers apart (each line starts
-  // with the speaker's name anyway). Pitch is left alone, since shifting it sounds robotic.
+  // The chair takes the best voice (or the one picked in Settings). Each member gets its own voice
+  // from the good ones, the chair's included, so all three sound different. When there are fewer
+  // good voices than members, the ones that have to share a voice get a different pitch instead.
+  const PITCH = [1, 0.85, 1.2];
   const voiceFor = (seat) => {
     const ok = voices.filter((x) => !bad.has(x.v));
-    if (!ok.length) return null;
+    if (!ok.length) return { voice: null, pitch: seat === 'chair' ? 1 : PITCH[seat] };
     const pick = preferred();
     const chosen = pick && ok.find((x) => (x.v.voiceURI || x.v.name) === pick);
-    if (chosen) return chosen.v;
-    const good = ok.filter((x) => x.s >= 30);
-    const i = seat === 'chair' ? 0 : seat + 1;
-    return (good.length > i ? good[i] : ok[0]).v;
+    let good = ok.filter((x) => x.s >= 30);
+    if (!good.length) good = [ok[0]];
+    if (chosen) good = [chosen, ...good.filter((x) => x !== chosen)];
+    if (seat === 'chair') return { voice: good[0].v, pitch: 1 };
+    return { voice: good[seat % good.length].v, pitch: PITCH[Math.floor(seat / good.length)] };
   };
 
   // Speaks one chunk at a time. A watchdog moves on if the engine never reports the end (Safari can
@@ -137,11 +139,12 @@ export function createNarrator({ onChange = () => {}, preferred = () => '' } = {
     }
     const item = queue.shift();
     const { text } = item;
-    const voice = voiceFor(item.seat);
+    const { voice, pitch } = voiceFor(item.seat);
     const u = new SpeechSynthesisUtterance(text);
     if (voice) u.voice = voice;
     u.lang = voice?.lang || navigator.language || 'en-US';
     u.rate = 1;
+    u.pitch = pitch;
     u.volume = 1;
     const mine = gen;
     let started = false;
