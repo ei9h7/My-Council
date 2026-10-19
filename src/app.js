@@ -1,5 +1,5 @@
 import { PERSONAS, runCouncil, transcriptMarkdown, sessionSummary } from './council.js';
-import { canSpeak, createNarrator, isAppleMobile } from './speech.js';
+import { canSpeak, createNarrator, isAppleMobile, voiceOptions } from './speech.js';
 import { listModels, makeComplete, checkKey, needsCacheOptIn } from './openrouter.js';
 import { renderMarkdown } from './markdown.js';
 import { ACCEPT, readAttachment } from './attachments.js';
@@ -33,6 +33,7 @@ const DEFAULTS = {
   anyModel: false,
   cachingOnly: true,
   theme: 'system',
+  voice: '', // read-aloud voice id; '' picks the best available
   council: {
     mode: 'ais',
     models: [...DEFAULT_MODELS],
@@ -647,6 +648,7 @@ function readConfig(statusEl) {
 // ---------- listening ----------
 
 const narrator = createNarrator({
+  preferred: () => settings.voice,
   onChange: (playing) => {
     $('listen').textContent = playing ? 'Stop listening' : 'Listen';
     $('listen').setAttribute('aria-pressed', String(playing));
@@ -964,6 +966,17 @@ function syncSettingsForm() {
   chair.innerHTML = '';
   for (const c of CHAIRS) chair.add(new Option(`${c.label} — ${c.tag}`, c.id));
   chair.value = settings.chair;
+  fillVoices();
+}
+
+function fillVoices() {
+  const sel = $('voice');
+  const opts = voiceOptions();
+  $('voiceField').hidden = !canSpeak();
+  sel.innerHTML = '';
+  sel.add(new Option(opts.length ? `Automatic — ${opts[0].label}` : 'Automatic', ''));
+  for (const o of opts) sel.add(new Option(o.label, o.id));
+  sel.value = opts.some((o) => o.id === settings.voice) ? settings.voice : '';
 }
 
 async function verifyKey() {
@@ -1035,6 +1048,13 @@ function wireSettings() {
     settings.chair = $('chair').value;
     save();
   });
+  $('voice').addEventListener('change', () => {
+    settings.voice = $('voice').value;
+    save();
+  });
+  $('testVoice').addEventListener('click', () => narrator.say('This is how the council will sound when you press Listen.'));
+  // Voices load late (and change after a download), so refresh the list when they do.
+  if (canSpeak()) speechSynthesis.addEventListener?.('voiceschanged', fillVoices);
 }
 
 function updateWelcome() {

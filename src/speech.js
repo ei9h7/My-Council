@@ -62,8 +62,8 @@ export function rankVoices(all, language = 'en-US') {
   const lang = language.toLowerCase();
   const score = (v) =>
     (v.default ? 100 : 0) +
-    (/premium/i.test(v.name) ? 60 : 0) +
-    (/enhanced|neural|natural|siri/i.test(v.name) ? 50 : 0) +
+    (/premium/i.test(`${v.name} ${v.voiceURI}`) ? 60 : 0) +
+    (/enhanced|neural|natural/i.test(`${v.name} ${v.voiceURI}`) ? 50 : 0) +
     (/^(Samantha|Ava|Allison|Susan|Zoe|Nicky|Tom|Evan|Nathan|Daniel|Karen|Moira|Serena|Google)\b/i.test(v.name) ? 30 : 0) +
     (v.lang?.toLowerCase() === lang ? 5 : 0) +
     (v.localService ? 2 : 0);
@@ -78,7 +78,19 @@ export function rankVoices(all, language = 'en-US') {
  * that keeps growing while a debate runs. play() reads from the start and keeps up with new segments
  * until stop(); onChange(playing) lets the button follow along.
  */
-export function createNarrator({ onChange = () => {} } = {}) {
+/** The voices worth offering, best first: [{ id, label }] (id is the voiceURI, or the name). */
+export function voiceOptions() {
+  if (!canSpeak()) return [];
+  return rankVoices(speechSynthesis.getVoices(), navigator.language || 'en-US').map(({ v }) => ({
+    id: v.voiceURI || v.name,
+    label: `${v.name}${/enhanced/i.test(v.voiceURI) && !/enhanced/i.test(v.name) ? ' (Enhanced)' : ''}${/premium/i.test(v.voiceURI) && !/premium/i.test(v.name) ? ' (Premium)' : ''}`,
+  }));
+}
+
+/**
+ * preferred() returns the voice the user picked in Settings (a voiceOptions id), or '' for automatic.
+ */
+export function createNarrator({ onChange = () => {}, preferred = () => '' } = {}) {
   let segments = [];
   let cursor = 0; // next segment
   let queue = []; // chunks of the segment being read
@@ -86,6 +98,7 @@ export function createNarrator({ onChange = () => {} } = {}) {
   let current = null; // the utterance being spoken; held so it isn't garbage-collected mid-sentence (a WebKit bug that drops onend)
   let timer = 0;
   let voices = [];
+  let oneShot = false; // say(): stop after this line instead of reading the debate
   let gen = 0; // bumped on play/stop so callbacks from cancelled utterances are ignored
 
   const bad = new Set(); // voices that never started speaking (listed but not downloaded)
@@ -103,6 +116,9 @@ export function createNarrator({ onChange = () => {} } = {}) {
   const voiceFor = (seat) => {
     const ok = voices.filter((x) => !bad.has(x.v));
     if (!ok.length) return null;
+    const pick = preferred();
+    const chosen = pick && ok.find((x) => (x.v.voiceURI || x.v.name) === pick);
+    if (chosen) return chosen.v;
     const good = ok.filter((x) => x.s >= 30);
     const i = seat === 'chair' ? 0 : seat + 1;
     return (good.length > i ? good[i] : ok[0]).v;
@@ -113,6 +129,7 @@ export function createNarrator({ onChange = () => {} } = {}) {
   function next() {
     if (!playing || current) return;
     if (!queue.length) {
+      if (oneShot) return void (playing = oneShot = false);
       if (cursor >= segments.length) return; // wait for more; push() resumes
       const seg = segments[cursor++];
       queue = chunks(seg.text).map((text) => ({ text, seat: seg.voice }));
@@ -178,6 +195,7 @@ export function createNarrator({ onChange = () => {} } = {}) {
     play() {
       if (!canSpeak()) return;
       gen++;
+      oneShot = false;
       clearTimeout(timer);
       // cancel() right before speak() can leave Safari silent, so only cancel when something is queued.
       if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
@@ -188,8 +206,17 @@ export function createNarrator({ onChange = () => {} } = {}) {
       onChange(true);
       next();
     },
+    /** Say one line right away (the Settings "Test" button); call it from the click. */
+    say(text) {
+      this.stop();
+      queue = chunks(speakable(text)).map((t) => ({ text: t, seat: 'chair' }));
+      oneShot = true;
+      playing = true;
+      next();
+    },
     stop() {
       gen++;
+      oneShot = false;
       clearTimeout(timer);
       playing = false;
       current = null;

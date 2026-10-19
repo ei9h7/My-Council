@@ -358,6 +358,7 @@ dialog.sheet::backdrop { background: rgb(10 12 20 / 45%); backdrop-filter: blur(
 .sheet .advanced[open] summary::after { content: "▴"; }
 .sheet-foot { position: sticky; bottom: 0; background: var(--surface); display: flex; justify-content: flex-end; padding: 12px 24px 16px; }
 .key-row { display: flex; gap: 8px; align-items: center; }
+.key-row select { flex: 1; min-width: 0; }
 .key-row input { flex: 1; min-width: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .howto ol { padding-left: 1.3em; margin: 8px 0; font-size: 0.92rem; }
 .howto li { margin: 4px 0; }
