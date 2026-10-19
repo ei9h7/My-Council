@@ -1,4 +1,5 @@
 import { PERSONAS, runCouncil, transcriptMarkdown, sessionSummary } from './council.js';
+import { canSpeak, createNarrator } from './speech.js';
 import { listModels, makeComplete, checkKey, needsCacheOptIn } from './openrouter.js';
 import { renderMarkdown } from './markdown.js';
 import { ACCEPT, readAttachment } from './attachments.js';
@@ -627,6 +628,26 @@ function readConfig(statusEl) {
   return { members, judgeModel: settings.chair || DEFAULT_CHAIR, complete };
 }
 
+// ---------- listening ----------
+
+const narrator = createNarrator({
+  onChange: (playing) => {
+    $('listen').textContent = playing ? 'Stop listening' : 'Listen';
+    $('listen').setAttribute('aria-pressed', String(playing));
+  },
+});
+
+function verdictSpeech(verdict) {
+  const v = verdict.parsed;
+  if (!v) return `The chair's verdict. ${verdict.text}`;
+  const label = { full: 'Consensus reached', partial: 'Partial consensus', none: 'No consensus' }[v.consensus] ?? '';
+  const parts = [`The chair's verdict: ${label}.`];
+  if (v.recommendation) parts.push(`Recommendation: ${v.recommendation}`);
+  if (v.summary) parts.push(v.summary);
+  if (v.disagreements?.length) parts.push(`Still contested: ${v.disagreements.join('. ')}`);
+  return parts.join('\n');
+}
+
 async function convene() {
   const question = $('question').value.trim();
   const config = readConfig($('status'));
@@ -640,6 +661,8 @@ async function convene() {
   $('sessions').innerHTML = '';
   hideFollowUp();
   $('export').hidden = true;
+  narrator.reset();
+  $('listen').hidden = !canSpeak();
   $('cost').textContent = '';
   await runSession({
     config,
@@ -697,6 +720,7 @@ async function runSession({ config, kind, title, userQuestion, engineQuestion, a
   let cards = [];
   let buffers = [];
   let judgeChars = 0;
+  let labels = [];
   let askedBy = []; // the members' original questions, when the chair merged them
 
   // Pauses the run until the user answers (or skips) the council's question(s).
@@ -774,11 +798,13 @@ async function runSession({ config, kind, title, userQuestion, engineQuestion, a
       case 'round-start':
         ui.status.textContent = `Round ${e.round} of ${e.totalRounds}…`;
         grid = roundSection(roundsEl, e.round);
+        narrator.push('chair', `${kind === 'follow' && e.round === 1 ? `${title}. ` : ''}Round ${e.round}.`);
         cards = [];
         buffers = [];
         break;
       case 'member-start':
         cards[e.index] = answerCard(e.label, members[e.index].model);
+        labels[e.index] = e.label;
         buffers[e.index] = '';
         grid.append(cards[e.index]);
         break;
@@ -798,6 +824,10 @@ async function runSession({ config, kind, title, userQuestion, engineQuestion, a
         }
         if (e.round > 1 && e.entry.agreement) c.querySelector('header').insertAdjacentHTML('beforeend', chip(e.entry.agreement, AGREE[e.entry.agreement]));
         collapsible(c);
+        narrator.push(
+          e.index,
+          `${labels[e.index]}.\n${stripProtocol(e.entry.text)}${e.entry.stance ? `\nStance: ${e.entry.stance}` : ''}`,
+        );
         ui.cost.textContent = costText(e.cost, e.saved);
         break;
       }
@@ -827,6 +857,7 @@ async function runSession({ config, kind, title, userQuestion, engineQuestion, a
         break;
       case 'verdict':
         showVerdict(verdictEl, e.verdict);
+        narrator.push('chair', verdictSpeech(e.verdict));
         ui.cost.textContent = costText(e.cost, e.saved, true);
         break;
     }
@@ -1043,6 +1074,7 @@ export function start() {
   $('followGo').addEventListener('click', conveneFollowUp);
   $('stop').addEventListener('click', () => controller?.abort());
   $('export').addEventListener('click', exportTranscript);
+  $('listen').addEventListener('click', () => (narrator.playing ? narrator.stop() : narrator.play()));
   $('question').addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) convene();
   });

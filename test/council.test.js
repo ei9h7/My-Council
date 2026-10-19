@@ -413,3 +413,11 @@ test('cache savings use the reported discount, else token counts and prices', ()
   assert.equal(cacheSavings(undefined, undefined, p), 0);
   assert.equal(cacheSavings({ prompt_tokens_details: { cached_tokens: 5 } }, undefined, undefined), 0);
 });
+
+test('speech: markdown becomes plain sentences and long text is chunked', async () => {
+  const { speakable, chunks } = await import('../src/speech.js');
+  assert.equal(speakable('## Plan\n\n**Buy** the [car](http://x.com).\n- cheap\n\nClaude · Steve Jobs'), 'Plan. Buy the car. cheap. Claude, Steve Jobs');
+  const parts = chunks('word '.repeat(200) + '. Short.', 100);
+  assert.ok(parts.every((p) => p.length <= 100));
+  assert.equal(parts.join(' ').split(/\s+/).filter((w) => w === 'word' || w === 'word.').length, 200);
+});

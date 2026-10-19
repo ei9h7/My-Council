@@ -91,6 +91,10 @@ Give each tester their own OpenRouter key with a spending cap, and send it as an
 
 Opening the link saves the key in their browser and connects them; the key is removed from the address bar, and the part after `#` is never sent to the web server. You see each tester's spend per key on OpenRouter and can delete a key to cut someone off. The tester can see their own key, so treat the link like a gift card worth its credit limit. For a login-based setup where testers never see a key, see the hosted branch.
 
+## Listening to the debate
+
+Press **Listen** (next to the cost line once a debate starts) to have it read aloud: each round, every member's answer and stance, then the chair's verdict. Each member gets its own voice (or pitch, on devices with few voices). Press it mid-debate and it starts from the beginning and keeps up as new answers arrive; press **Stop listening** to stop. It uses the browser's built-in speech, so it's free and needs no extra key; voice quality depends on the device (Safari and Edge on Mac/iPhone/Windows have the best ones).
+
 Settings also holds the council (style, models, priorities), the debate rounds (default 3), early stop, clarifying questions, the chair model, theme, and Advanced options.
 
 ## Files
